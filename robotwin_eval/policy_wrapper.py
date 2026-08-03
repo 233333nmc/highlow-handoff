@@ -46,6 +46,7 @@ from __future__ import annotations
 
 from collections import deque
 from pathlib import Path
+import time
 from typing import Any
 
 import numpy as np
@@ -182,6 +183,12 @@ class HyVLAPolicyWrapper:
         self.umi_coord_frame = bool(umi_coord_frame)
         self.umi_gripper_space = bool(umi_gripper_space)
 
+        # Per-call profiling metadata consumed by the optional high-level
+        # controller. These do not alter action generation.
+        self.last_action_used_cache = False
+        self.last_model_forward_ms = 0.0
+        self.last_action_call_ms = 0.0
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -191,7 +198,18 @@ class HyVLAPolicyWrapper:
         self._top_imgs.clear()
         self._left_imgs.clear()
         self._right_imgs.clear()
+        self.last_action_used_cache = False
+        self.last_model_forward_ms = 0.0
+        self.last_action_call_ms = 0.0
         return "Hy-VLA wrapper reset"
+
+    def invalidate_action_cache(self) -> int:
+        """Discard actions predicted for a superseded language instruction."""
+
+        stale_actions = len(self.action_cache)
+        self.action_cache.clear()
+        self.policy.reset()
+        return stale_actions
 
     # ------------------------------------------------------------------
     # Inference
@@ -204,6 +222,10 @@ class HyVLAPolicyWrapper:
         which keeps the overall RoboTwin step cadence equal to one model
         forward per ``exc_action_size`` env steps.
         """
+        call_started = time.perf_counter()
+        self.last_action_used_cache = False
+        self.last_model_forward_ms = 0.0
+
         # Always grow the per-camera frame buffers on every call so that
         # the K-frame stack stays time-aligned even while we are serving
         # cached actions.
@@ -211,7 +233,10 @@ class HyVLAPolicyWrapper:
             self._append_history_frames(batch)
 
         if len(self.action_cache) > 0:
-            return self.action_cache.popleft()
+            self.last_action_used_cache = True
+            action = self.action_cache.popleft()
+            self.last_action_call_ms = (time.perf_counter() - call_started) * 1000.0
+            return action
 
         initial_ee_pose_wxyz = batch["observation.state"][0, :16].copy()
         # wxyz → xyzw
@@ -252,7 +277,9 @@ class HyVLAPolicyWrapper:
                 batch[k] = v.to(self.weight_dtype).cuda()
 
         self.policy.reset()
+        forward_started = time.perf_counter()
         action0 = self.policy.select_action(batch)
+        self.last_model_forward_ms = (time.perf_counter() - forward_started) * 1000.0
         actions = [action0]
         for _ in range(len(self.policy._action_queue)):
             actions.append(self.policy._action_queue.popleft())
@@ -272,6 +299,7 @@ class HyVLAPolicyWrapper:
         # Cache the rest of the chunk for subsequent calls.
         for action in actions_wxyz[1 : self.exc_action_size]:
             self.action_cache.append(action)
+        self.last_action_call_ms = (time.perf_counter() - call_started) * 1000.0
         return actions_wxyz[0]
 
     # ------------------------------------------------------------------

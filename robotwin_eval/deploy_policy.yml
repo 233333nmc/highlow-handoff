@@ -14,7 +14,7 @@
 # HuggingFace repo id or local directory containing config.json +
 # model.safetensors + norm_stats.pkl. When norm_path is null the wrapper
 # auto-resolves it from <ckpt_path>/norm_stats.pkl.
-ckpt_path: tencent/Hy-VLA-RoboTwin
+ckpt_path: tencent/Hy-Embodied-0.5-VLA-RoboTwin
 norm_path: null
 
 # --- Action decoding ------------------------------------------------------
@@ -35,3 +35,53 @@ img_history_interval: 5
 # --- UMI coordinate frame ------------------------------------------------
 umi_coord_frame: False
 umi_gripper_space: False
+
+# --- Optional hierarchical high-level / low-level prototype ---------------
+# Disabled by default. The first prototype uses a forced-boundary timing
+# baseline: the low-level executes its current subtask for a fixed interval,
+# then the high-level receives an unverified execution report and emits the
+# next subtask. This is not a completion detector.
+hierarchical_enabled: False
+hierarchical_instruction_mode: subtask  # subtask | augmented | memory_only | original
+# `forced_boundary` is a timing control. `task_oracle` disables the timer
+# and triggers after the selected task profile's first-subtask oracle is stable.
+# `burger_oracle` remains accepted as a legacy alias for place_burger_fries.
+hierarchical_handoff_trigger: forced_boundary  # forced_boundary | task_oracle
+hierarchical_oracle_stability_steps: 3
+# Calibration-only: end the current evaluation episode after recording the
+# stable task-oracle handoff. This does not mark the full task as successful.
+hierarchical_stop_after_oracle_handoff: False
+# Calibration-only timeout for seeds that never trigger the first-subtask
+# oracle. Zero disables this early stop.
+hierarchical_calibration_max_sim_time_s: 0.0
+# Measurement-only: stop after the first low-level action using the refreshed
+# instruction has been logged. It does not provide full-task success.
+hierarchical_stop_after_measurement_handoff: False
+hierarchical_forced_boundary_s: 5.0
+hierarchical_max_forced_boundaries: 1
+hierarchical_history_fps: 1.0
+hierarchical_source_fps: 25.0
+hierarchical_recent_frames_length: 8
+hierarchical_memory_length: 8
+hierarchical_keyframe_merge_distance: 5
+hierarchical_max_memory_frames: 256
+hierarchical_log_path: null
+
+# `scripted` is the stable timing/plumbing baseline. `shared_hunyuan_vlm`
+# reuses the low-level action model's VLM tower, but it is not a reliable
+# instruction-following planner. `qwen25_vl` loads a Qwen2.5-VL checkpoint
+# directly. `qwen36_vllm_mtp` calls a separate Qwen3.6 vLLM service, which
+# enables native MTP decoding without changing the low-level runtime.
+hierarchical_backend: scripted  # scripted | shared_hunyuan_vlm | qwen25_vl | qwen36_vllm_mtp
+hierarchical_vlm_camera: head_camera
+hierarchical_vlm_max_images: 8
+hierarchical_vlm_max_new_tokens: 160
+hierarchical_qwen_model_path: null
+hierarchical_qwen_device: auto
+hierarchical_qwen_attention_implementation: flash_attention_2
+hierarchical_qwen_min_pixels: 200704  # 256 * 28 * 28
+hierarchical_qwen_max_pixels: 602112  # 768 * 28 * 28
+hierarchical_qwen36_server_url: null
+hierarchical_qwen36_model_name: qwen3.6-27b-mtp
+hierarchical_qwen36_request_timeout_s: 120.0
+hierarchical_qwen36_jpeg_quality: 90
