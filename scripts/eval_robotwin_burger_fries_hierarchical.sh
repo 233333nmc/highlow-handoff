@@ -40,6 +40,8 @@ QWEN36_SERVER_URL=${QWEN36_SERVER_URL:-http://127.0.0.1:8001}
 QWEN36_MODEL_NAME=${QWEN36_MODEL_NAME:-qwen3.6-27b-mtp}
 QWEN36_REQUEST_TIMEOUT_S=${QWEN36_REQUEST_TIMEOUT_S:-120}
 QWEN36_JPEG_QUALITY=${QWEN36_JPEG_QUALITY:-90}
+QWEN36_IMAGE_SELECTION=${QWEN36_IMAGE_SELECTION:-tail}
+QWEN36_IMAGE_MAX_SIDE=${QWEN36_IMAGE_MAX_SIDE:-0}
 
 mkdir -p \
   "${LOG_DIR}" \
@@ -102,6 +104,7 @@ if [[ "${HL_BACKEND}" == "qwen25_vl" ]]; then
 elif [[ "${HL_BACKEND}" == "qwen36_vllm_mtp" ]]; then
   echo "Qwen3.6 server     : ${QWEN36_SERVER_URL}"
   echo "Qwen3.6 model      : ${QWEN36_MODEL_NAME}"
+  echo "Qwen3.6 images     : ${QWEN36_IMAGE_SELECTION}, max_side=${QWEN36_IMAGE_MAX_SIDE}"
 fi
 
 (
@@ -139,6 +142,8 @@ fi
       --hierarchical_qwen36_model_name "${QWEN36_MODEL_NAME}" \
       --hierarchical_qwen36_request_timeout_s "${QWEN36_REQUEST_TIMEOUT_S}" \
       --hierarchical_qwen36_jpeg_quality "${QWEN36_JPEG_QUALITY}" \
+      --hierarchical_qwen36_image_selection "${QWEN36_IMAGE_SELECTION}" \
+      --hierarchical_qwen36_image_max_side "${QWEN36_IMAGE_MAX_SIDE}" \
       --hierarchical_history_fps 1.0 \
       --hierarchical_source_fps 25.0 \
       --hierarchical_recent_frames_length 8 \

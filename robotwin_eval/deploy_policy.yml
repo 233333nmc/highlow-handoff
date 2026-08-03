@@ -85,3 +85,5 @@ hierarchical_qwen36_server_url: null
 hierarchical_qwen36_model_name: qwen3.6-27b-mtp
 hierarchical_qwen36_request_timeout_s: 120.0
 hierarchical_qwen36_jpeg_quality: 90
+hierarchical_qwen36_image_selection: tail  # tail | all | recent_tail | uniform | latest
+hierarchical_qwen36_image_max_side: 0  # 0 keeps the original frame size before JPEG encoding

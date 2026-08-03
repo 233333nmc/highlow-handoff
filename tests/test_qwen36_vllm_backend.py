@@ -17,6 +17,11 @@ class _FakeResponse:
 
     def json(self) -> dict[str, object]:
         return {
+            "usage": {
+                "prompt_tokens": 321,
+                "completion_tokens": 12,
+                "total_tokens": 333,
+            },
             "choices": [
                 {
                     "message": {
@@ -86,6 +91,11 @@ class Qwen36VllmBackendTest(unittest.TestCase):
         self.assertTrue(prediction.parse_ok)
         self.assertEqual(1.0, prediction.timing_ms["mtp_enabled"])
         self.assertEqual(1.0, prediction.timing_ms["mtp_speculative_tokens"])
+        self.assertEqual(1.0, prediction.timing_ms["usage_available"])
+        self.assertEqual(321.0, prediction.timing_ms["usage_prompt_tokens"])
+        self.assertEqual(12.0, prediction.timing_ms["usage_completion_tokens"])
+        self.assertEqual(333.0, prediction.timing_ms["usage_total_tokens"])
+        self.assertEqual(1.0, prediction.timing_ms["image_count"])
 
         self.assertEqual(
             "http://127.0.0.1:8001/v1/chat/completions",
@@ -109,6 +119,57 @@ class Qwen36VllmBackendTest(unittest.TestCase):
             content[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
         )
         self.assertEqual("text", content[1]["type"])
+
+    def test_latest_image_selection_records_compression_metrics(self) -> None:
+        backend = Qwen36VllmBackend(
+            server_url="http://127.0.0.1:8001",
+            max_images=3,
+            max_new_tokens=32,
+            image_selection="latest",
+            image_max_side=8,
+            warmup_calls=0,
+        )
+        session = _FakeSession()
+        backend.session = session
+        frames = [
+            FrameRecord(
+                frame_id=frame_id,
+                timestamp_s=float(index),
+                camera_images={
+                    "head_camera": np.full((8, 16, 3), index, dtype=np.uint8),
+                },
+            )
+            for index, frame_id in enumerate([0, 25, 50])
+        ]
+
+        prediction = backend.predict(
+            prompt="Task: place_burger_fries",
+            memory_frames=[],
+            recent_frames=frames,
+            timestamp_s=2.2,
+            phase_index=1,
+            phase_prompt="Place the french fries on the tray.",
+            execution_report=None,
+        )
+
+        self.assertIn("evidence_frame_ids=[50]", prediction.raw_text)
+        self.assertEqual(1.0, prediction.timing_ms["image_count"])
+        self.assertEqual(8.0, prediction.timing_ms["image_avg_width"])
+        self.assertEqual(4.0, prediction.timing_ms["image_avg_height"])
+        self.assertGreater(prediction.timing_ms["image_encoded_bytes"], 0.0)
+        assert session.payload is not None
+        content = session.payload["messages"][0]["content"]
+        self.assertEqual("image_url", content[0]["type"])
+        self.assertEqual("text", content[1]["type"])
+        self.assertIn("image 1 -> recent position 3", content[1]["text"])
+
+    def test_invalid_image_selection_fails_fast(self) -> None:
+        with self.assertRaises(ValueError):
+            Qwen36VllmBackend(
+                server_url="http://127.0.0.1:8001",
+                image_selection="middle",
+                warmup_calls=0,
+            )
 
 
 if __name__ == "__main__":

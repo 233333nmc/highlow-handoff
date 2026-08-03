@@ -302,6 +302,12 @@ def _maybe_attach_hierarchical_controller(
             jpeg_quality=int(
                 usr_args.get("hierarchical_qwen36_jpeg_quality", 90)
             ),
+            image_selection=str(
+                usr_args.get("hierarchical_qwen36_image_selection", "tail")
+            ),
+            image_max_side=int(
+                usr_args.get("hierarchical_qwen36_image_max_side", 0)
+            ),
         )
     elif backend_name != "scripted":
         raise ValueError(
