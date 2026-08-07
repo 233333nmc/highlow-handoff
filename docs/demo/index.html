@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RoboTwin High-Low Handoff Demo</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">RoboTwin high-level / low-level handoff</p>
+        <h1>Subtask Switch Demo Browser</h1>
+      </div>
+      <nav class="navlinks" aria-label="Page sections">
+        <a href="#demo">Demo</a>
+        <a href="#results">Results</a>
+        <a href="#how-to-update">Update</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="intro">
+        <div class="intro-copy">
+          <p>
+            This page is a lightweight demo viewer for RoboTwin handoff rollouts.
+            It shows the active task, the current low-level subtask, the high-level
+            verifier decision, and the next instruction sent back to Hy-VLA.
+          </p>
+          <div class="metric-row" id="summaryMetrics"></div>
+        </div>
+      </section>
+
+      <section class="demo-shell" id="demo">
+        <aside class="task-panel">
+          <div class="panel-title">
+            <span>Tasks</span>
+            <span id="taskCount"></span>
+          </div>
+          <div class="task-list" id="taskList"></div>
+        </aside>
+
+        <section class="viewer" aria-live="polite">
+          <div class="viewer-head">
+            <div>
+              <p class="eyebrow" id="activeMode">Planner</p>
+              <h2 id="activeTitle">Loading demo</h2>
+            </div>
+            <div class="status-pill" id="activeStatus">ready</div>
+          </div>
+
+          <div class="video-frame">
+            <video id="demoVideo" controls playsinline preload="metadata"></video>
+            <div class="video-placeholder" id="videoPlaceholder">
+              <div class="placeholder-visual">
+                <div class="tray"></div>
+                <div class="object object-a"></div>
+                <div class="object object-b"></div>
+                <div class="arm arm-left"></div>
+                <div class="arm arm-right"></div>
+              </div>
+              <p id="placeholderText">Add a rollout video path in data/demos.json.</p>
+            </div>
+          </div>
+
+          <div class="timeline" id="timeline"></div>
+
+          <div class="detail-grid">
+            <div class="detail-box">
+              <span class="label">Boundary check</span>
+              <strong id="boundaryText">-</strong>
+            </div>
+            <div class="detail-box">
+              <span class="label">Decision latency</span>
+              <strong id="latencyText">-</strong>
+            </div>
+            <div class="detail-box">
+              <span class="label">Verifier output</span>
+              <strong id="verifierText">-</strong>
+            </div>
+            <div class="detail-box">
+              <span class="label">Cache action</span>
+              <strong id="cacheText">-</strong>
+            </div>
+          </div>
+
+          <pre class="json-box" id="jsonBox"></pre>
+        </section>
+      </section>
+
+      <section class="results" id="results">
+        <div class="section-head">
+          <p class="eyebrow">Gemma4-12B MTP</p>
+          <h2>Latency Summary</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Task</th>
+                <th>Forced time</th>
+                <th>Actual trigger</th>
+                <th>Mean</th>
+                <th>Median</th>
+                <th>Range</th>
+              </tr>
+            </thead>
+            <tbody id="resultRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="update" id="how-to-update">
+        <div class="section-head">
+          <p class="eyebrow">Maintainable demo</p>
+          <h2>How to update videos</h2>
+        </div>
+        <div class="update-grid">
+          <div>
+            <h3>1. Save videos</h3>
+            <p>Put rollout videos under <code>docs/demo/assets/</code>.</p>
+          </div>
+          <div>
+            <h3>2. Edit data</h3>
+            <p>Update <code>docs/demo/data/demos.json</code> with the video path, subtask names, timing, and verifier output.</p>
+          </div>
+          <div>
+            <h3>3. Open page</h3>
+            <p>Open <code>docs/demo/index.html</code> directly, or serve the repo with any static file server.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="data/demos.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,438 +1,457 @@
-<div align="center">
-<h1>Hy-Embodied-0.5-VLA</h1>
-<p><b>From Vision-Language-Action Models to a Real-World Robot Learning Stack</b></p>
-<p><i>Tencent Robotics X × Tencent Hy Team</i></p>
+# RoboTwin High-Level / Low-Level Handoff Report
 
-<a href="https://tairos.tencent.com/openSourceModels/hy-embodied-0.5-vla"><img src="https://img.shields.io/badge/Website-Project_Page-blue?logo=internet-explorer" alt="Project Page"></a>
-<a href="https://arxiv.org/abs/2606.14409"><img src="https://img.shields.io/badge/PDF-arXiv-red?logo=arxiv" alt="Tech Report"></a>
-<a href="https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA"><img src="https://img.shields.io/badge/Code-GitHub-black?logo=github" alt="Code"></a>
-<br>
-<a href="https://huggingface.co/tencent/Hy-Embodied-0.5-VLA-UMI"><img src="https://img.shields.io/badge/Model-HuggingFace-yellow?logo=huggingface" alt="Model"></a>
-<a href="https://modelscope.cn/models/Tencent-Hunyuan/Hy-Embodied-0.5-VLA-RoboTwin"><img src="https://img.shields.io/badge/Model-ModelScope-purple?logo=modelscope" alt="ModelScope"></a>
-<a href="https://huggingface.co/datasets/tencent/Hy-Embodied-0.5-VLA-Data"><img src="https://img.shields.io/badge/Data-HuggingFace-orange?logo=huggingface" alt="Data"></a>
-<a href="https://modelscope.cn/datasets/Tencent-HunYuan/Hy-Embodied-0.5-VLA-Data"><img src="https://img.shields.io/badge/Data-ModelScope-purple?logo=modelscope" alt="Data"></a>
-</div>
+Updated: 2026-08-07
 
-https://github.com/user-attachments/assets/fdd1966c-8453-4f6a-9758-238076d08ac4
+本仓库记录 RoboTwin high-level / low-level handoff baseline、Gemma4-12B 相关实验，以及 `next / all` planner 调试结果。
 
-## 🔥 Updates
+## 1. 本周完成
 
-* **`[2026-07-09]`** 🤖 Added [RoboDojo](https://github.com/robodojo-benchmark/RoboDojo) benchmark support — including HDF5 dataset loader, training / evaluation scripts, and a policy adapter. Thanks to [XPolicyLab](https://github.com/XPolicyLab/XPolicyLab) for the contribution!
-* **`[2026-06-16]`** 🌐 Added ModelScope links for all models and data.
-* **`[2026-06-15]`** 🚀 We have released **Hy-Embodied-0.5-VLA** — including the codebase, the [`Hy-Embodied-0.5-VLA-UMI`](https://huggingface.co/tencent/Hy-Embodied-0.5-VLA-UMI) and [`Hy-Embodied-0.5-VLA-RoboTwin`](https://huggingface.co/tencent/Hy-Embodied-0.5-VLA-RoboTwin) models, and the [`Hy-Embodied-0.5-VLA-Data`](https://huggingface.co/datasets/tencent/Hy-Embodied-0.5-VLA-Data) egocentric UMI dataset (2K+ hours)!
+本周主要做了三件事：
 
-## 📖 Abstract
+- 收口 high-level 输入 / 输出，删掉了未实际参与控制的字段。
+- 增加并验证了 `next / all` 两类 planner 路径，以及 `same / switch` verifier 路径。
+- 在 Gemma4-12B 上跑通了 forced-boundary、verifier 和 planner 相关测试。
 
-We introduce **Hy-Embodied-0.5-VLA (Hy-VLA)** — an end-to-end Vision-Language-Action system that spans the full robot learning stack: data collection, model design, pre-training, supervised fine-tuning, RL post-training, and real-world deployment. Built on the [Hy-Embodied-0.5](https://github.com/Tencent-Hunyuan/HY-Embodied) MoT backbone, Hy-VLA integrates a flow-matching action expert, a compact memory encoder for multi-frame history, and a delta-chunk action representation decoupled from embodiment-specific kinematics.
+## 2. 当前代码逻辑
 
-Powered by **10,000+ hours** of high-fidelity UMI demonstrations collected via a custom fingertip interface with optical motion-capture, Hy-VLA achieves state-of-the-art results on the RoboTwin 2.0 benchmark (**90.9% / 90.1%** on Clean / Randomized) and demonstrates robust cross-embodiment transfer across four real-world robot platforms. Paired with [FlowPRO](https://wuyeyexvnainai.github.io/flowpro/) preference optimization and an asynchronous inference framework, Hy-VLA establishes a scalable paradigm for continuous dexterous manipulation.
+### 2.1 Planner 模式
 
-<div align="center">
-<img src="assets/teaser.png" alt="Hy-VLA Teaser" width="85%">
-</div>
+当前支持的 planner 模式包括：
 
-## ⭐ Key Features
+- `inline_vlm`：VLM 直接输出下一条 subtask。
+- `vlm_plan_all`：在 episode 开头一次性生成完整的 subtask 列表。
+- `vlm_plan_next`：需要切换时才生成下一条 subtask，可配 prefetch。
+- `profile_all` / `lazy_profile`：确定性调试模式。
 
-  * 🧠 **Unified VLA Architecture:** Extends the Hy-Embodied-0.5 MoT backbone with a dual-tower flow-matching action expert. The VLM tower handles vision-language understanding while the action expert generates continuous action chunks — all tied together through shared cross-modal attention.
-  * 🎯 **Delta-Chunk Action Representation:** Actions are predicted as relative-to-current-frame end-effector delta chunks, decoupling the policy from embodiment-specific kinematics and enabling seamless cross-embodiment transfer.
-  * 📹 **Compact Memory Encoder:** A parameter-free temporal-spatial attention mechanism interleaved within the ViT encoder compresses K-frame multi-view history into current-frame tokens, preserving temporal context without inflating the token budget.
-  * 📊 **Hy-UMI-10K Dataset:** 10K+ hours of sub-millimeter precision dual-arm demonstrations across 70+ tasks, collected with a custom fingertip UMI rig tracked by an optical motion-capture system. 2K+ hours are publicly released.
-  * 🚀 **FlowPRO Post-Training** *(under review)*: A critic-free preference optimization algorithm that converts real-robot failure interventions into rapid policy improvement without reward models.
-  * ⚡ **Asynchronous Deployment Stack:** Producer-consumer inference with cubic Bézier chunk stitching enables high-frequency closed-loop control across heterogeneous robot platforms.
+### 2.2 Verifier / 输出
 
-## 📦 Repository Contents
+当前支持的高层输出形式包括：
 
-```
-Hy-Embodied-0.5-VLA/
-├── hy_vla/                      # Core model definition, training, and inference
-│   ├── modeling_hy_vla.py       # HyVLA model class
-│   ├── modeling_dual_tower.py   # Dual-tower transformer (VLM + action expert)
-│   ├── configuration_hy_vla.py  # Model configuration
-│   ├── space_time_attention.py  # Temporal-spatial attention for memory encoder
-│   ├── data/                    # Dataloader and dataset utilities
-│   ├── config/                  # YAML configuration files
-│   └── hunyuan_vl_mot/          # Vendored Hy-Embodied VLM backbone (fallback)
-├── scripts/                     # Training, evaluation, and preprocessing scripts
-│   ├── quick_start.py           # Fast smoke-test for a released checkpoint
-│   ├── train_umi_vlm.sh         # Stage-1 pre-training launcher
-│   ├── train_robotwin_vlm.sh    # Stage-2 SFT from VLM backbone
-│   ├── train_robotwin_umi.sh    # Stage-2 SFT from UMI pretrain
-│   ├── train_robodojo_umi.sh    # Stage-2 SFT from UMI pretrain on RoboDojo HDF5
-│   ├── train_table_vlm.sh       # Single-table fast-iteration training
-│   ├── eval_robotwin_test.sh    # Quick RoboTwin regression (6 tasks)
-│   ├── eval_robotwin_full.sh    # Full RoboTwin sweep (50 tasks × 100 rollouts)
-│   ├── compute_norm_umi.py      # Pre-compute norm stats from UMI data
-│   ├── compute_norm_robotwin.py # Pre-compute norm stats from RoboTwin data
-│   ├── compute_norm_robodojo.py # Pre-compute norm stats from RoboDojo data
-│   ├── vis_umi_episode.py       # Render a UMI episode as MP4
-│   ├── vis_robotwin_episode.py  # Render a RoboTwin episode as MP4
-│   └── vis_robodojo_episode.py  # Render a RoboDojo episode as MP4
-├── robotwin_eval/               # RoboTwin adapter for evaluation
-├── robodojo_eval/               # RoboDojo adapter for evaluation
-├── assets/                      # Example data and index files
-└── pyproject.toml               # Python project configuration (uv/pip)
-```
+- `minimal`
+- `minimal_status`
+- `completion_status`
 
-## 🛠️ Installation
+其中 `completion_status` 用于 `same / switch` 风格判断；`minimal_status` 用于最小控制接口。
 
-### Prerequisites
+当前 verifier 的主输出是：
 
-- 🖥️ **OS**: Linux (recommended)
-- 🐍 **Python**: 3.12 (recommended and tested)
-- ⚡ **CUDA**: 12.x
-- 🔥 **PyTorch**: ≥ 2.4
-- 🎮 **GPU**: NVIDIA GPU with CUDA support (≥ 16 GB VRAM recommended)
-
-### Install via uv (recommended)
-
-```bash
-git clone https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA
-cd Hy-Embodied-0.5-VLA
-
-# One-off: install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Materialize the virtual environment
-uv sync
-```
-
-### Install via pip
-
-```bash
-pip install -r requirements.txt
-```
-
-
-## 🚀 Quick Start
-
-The fastest way to verify a fresh install is the bundled smoke test:
-
-```python
-import torch
-from huggingface_hub import snapshot_download
-from hy_vla import HyVLA, HyVLAConfig
-
-ckpt = snapshot_download("tencent/Hy-Embodied-0.5-VLA-RoboTwin")
-
-config = HyVLAConfig.from_pretrained(ckpt)
-policy = HyVLA.from_pretrained(ckpt, config=config)
-policy.enable_video_encoder_if_needed()
-policy = policy.to(device="cuda", dtype=torch.bfloat16).eval()
-
-# (B, K, C, H, W); K=6 history slots
-img = torch.zeros(1, 6, 3, 224, 224, device="cuda", dtype=torch.bfloat16)
-# Normalized dual-arm EEF: [xyz(3) + rot6d(6) + gripper(1)] * 2
-state = torch.zeros((1, config.max_state_dim), device="cuda", dtype=torch.bfloat16)
-batch = {
-    "observation.images.top_head":   img,
-    "observation.images.hand_left":  img,
-    "observation.images.hand_right": img,
-    "observation.state": state,
-    "task": ["pick up the bottle"],
-}
-
-with torch.no_grad():
-    actions = policy.forward_evaluate(batch)["pred"]
-    actions = actions[..., : config.action_feature.shape[0]]
-print(actions.shape)
-```
-
-Or simply:
-
-```bash
-python scripts/quick_start.py
-```
-
-## 🤖 Model
-
-Hy-VLA follows the Vision-Language-Action paradigm built on three components:
-
-<div align="center">
-<img src="assets/model.png" alt="Hy-VLA Architecture" width="85%">
-</div>
-
-**Backbone — Hy-Embodied-0.5 MoT.** A Mixture-of-Transformers architecture with modality-adaptive computation. Visual tokens are routed through dedicated vision-specific parameters while text tokens use the original language parameters; cross-modal interaction is limited to shared self-attention layers. The backbone encodes images at native resolution via Hy-ViT 2.0.
-
-**Action Expert — Dual-Tower Flow Matching.** Rather than discretizing actions into language tokens, a dedicated 370M-parameter action expert models the continuous action distribution via conditional flow matching. The VLM tower and action expert tower share attention, allowing grounded vision-language context to guide continuous action generation. At inference, actions are generated by integrating the learned velocity field over 10 Euler steps with KV-cached observation prefixes.
-
-**Compact Memory Encoder.** Interleaved temporal-spatial attention within the ViT encoder compresses K-frame multi-view history. Temporal attention (causal across frames) and spatial attention (bidirectional within each frame) reuse the same QKV projections — zero new parameters relative to the single-image encoder. Past-frame tokens are discarded after temporal mixing, keeping the VLM token count constant regardless of history length.
-
-### Released Checkpoints
-
-| Model | HuggingFace | ModelScope | Description |
-|---|---|---|---|
-| **Hy-VLA-UMI** | [`tencent/Hy-Embodied-0.5-VLA-UMI`](https://huggingface.co/tencent/Hy-Embodied-0.5-VLA-UMI) | [`Tencent-Hunyuan/Hy-Embodied-0.5-VLA-UMI`](https://modelscope.cn/models/Tencent-Hunyuan/Hy-Embodied-0.5-VLA-UMI) | Pre-trained on the Hy-UMI-10K corpus; intended as a generalist starting point for fine-tuning |
-| **Hy-VLA-RoboTwin** | [`tencent/Hy-Embodied-0.5-VLA-RoboTwin`](https://huggingface.co/tencent/Hy-Embodied-0.5-VLA-RoboTwin) | [`Tencent-Hunyuan/Hy-Embodied-0.5-VLA-RoboTwin`](https://modelscope.cn/models/Tencent-Hunyuan/Hy-Embodied-0.5-VLA-RoboTwin) | Post-trained on the RoboTwin 2.0 50-task benchmark |
-
-Both checkpoints are self-contained — they ship their own `tokenizer.json`, `vlm_config_dict`, `chat_template.jinja`, and pre-computed normalization statistics (`norm_stats.pkl`). If needed, you can regenerate normalization stats on your own data using `scripts/compute_norm_umi.py`.
-
-## 📊 Data
-
-Hy-VLA is pre-trained on **Hy-Embodied-0.5-VLA-Data**, a large-scale bimanual manipulation dataset with **250K+ episodes** spanning **10K+ hours** of dual-arm teleoperation trajectories, wiht **2K+ hours** released. The open-source release contains approximately one-fifth of the full training corpus, partitioned into 22 Lance-format tables compatible with [LeRobot](https://github.com/huggingface/lerobot) v3.0.
-
-| Attribute | Value |
-|---|---|
-| Format | Lance (LeRobot v3.0 schema) |
-| Resolution | 240 × 424 px |
-| Cameras | `cam_high` (head), `cam_left_wrist`, `cam_right_wrist` |
-| State | 16-dim dual-arm EEF (pos + quat + gripper per arm) |
-| FPS | 30 |
-| Total Episodes | 250K+ |
-| Total Duration | 2000+ hours |
-
-<div align="center">
-<img src="assets/data.png" alt="UMI Dataset Distribution" width="85%">
-</div>
-
-### Data Loading Quick Start
-
-`LanceTableReader` reads a single Lance table (local or HF Hub):
-
-```python
-from hy_vla.data.umi_dataset import LanceTableReader
-
-# Local directory
-reader = LanceTableReader(root="./table_000")
-
-# HF Hub
-reader = LanceTableReader(
-    repo_id="tencent/Hy-Embodied-0.5-VLA-Data",
-    table_name="table_000",
-)
-
-# Access
-frame = reader[42]                        # single frame dict
-episode = reader.get_episode(3)           # all frames of episode 3
-```
-
-> Also compatible with raw `lance`, `lancedb`, and [`lerobot-lancedb`](https://github.com/lancedb/lerobot-lancedb) (`LeRobotLanceDataset`).
-
-### Example Episode Visualization
-
-https://github.com/user-attachments/assets/d135a30a-fc5f-43e1-8cfd-616440e7180d
-
-You can render any episode locally:
-
-```bash
-# Use the HF Hub dataset, pick table_000 episode 666
-python scripts/vis_umi_episode.py -t table_000 -e 666
-
-# Local Lance root
-python scripts/vis_umi_episode.py /path/to/Hy-Embodied-0.5-Data -e 0 --no-3d
-```
-
-### 📍 Coordinate System
-
-Below we document the axis mappings and provide a reference transform for converting between the UMI and RoboTwin systems. 
-
-The transform below is provided as a reference for aligning with the UMI coordinate system. Our released checkpoints do **not** apply any special pre-processing — the network naturally adapts to different coordinate conventions after sufficient training iterations.
-
-#### Axis Mapping
-
-| Dataset | World Forward | World Left | World Up | Local Forward | Local Left | Local Up | Gripper Open | Gripper Close |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **UMI** | +X | +Y | +Z | +Z | +X | +Y | 0 | 90 |
-| **RoboTwin** | +Y | -X | +Z | +X | +Y | +Z | 1 | 0 |
-> **Note:** The gripper value represents the travel distance of the parallel gripper in millimeters (mm). `0` indicates the gripper is fully open, and `90` indicates it is fully closed.
-
-#### Coordinate Transform
-
-First, we represent the RoboTwin frames in the UMI world:
-
-* **World Rotation Matrix ($W$)**: Aligns the global world frames.
-
-$$
-W = \begin{bmatrix}
-0 & 1 & 0 \\
--1 & 0 & 0 \\
-0 & 0 & 1
-\end{bmatrix}
-$$
-
-* **Local Permutation Matrix ($P$)**: Permutes the local axes to redefine the end-effector's local orientation.
-
-$$
-P = \begin{bmatrix}
-0 & 0 & 1 \\
-1 & 0 & 0 \\
-0 & 1 & 0
-\end{bmatrix}
-$$
-
-#### From RoboTwin to UMI
-
-Let $p_{\text{native}}$ and $R_{\text{native}}$ be the position vector and rotation matrix in RoboTwin, and $q_{\text{native}}$ be its quaternion. The mapping to UMI ($p_{\text{umi}}$, $R_{\text{umi}}$, $q_{\text{umi}}$) is:
-
-* **Position:** $p_{\text{umi}} = W p_{\text{native}}$
-* **Rotation Matrix:** $R_{\text{umi}} = W R_{\text{native}} P$
-* **Quaternion:** $q_{\text{umi}} = q_W \otimes q_{\text{native}} \otimes q_P$ (where $\otimes$ denotes quaternion multiplication)
-
-#### From UMI to RoboTwin (Inverse Transform)
-
-Since $W$ and $P$ are orthogonal matrices, their inverses are simply their transposes ($W^{-1} = W^T$, $P^{-1} = P^T$). The inverse mapping is:
-
-* **Position:** $p_{\text{native}} = W^T p_{\text{umi}}$
-* **Rotation Matrix:** $R_{\text{native}} = W^T R_{\text{umi}} P^T$
-* **Quaternion:** $q_{\text{native}} = q_W^{-1} \otimes q_{\text{umi}} \otimes q_P^{-1}$
-
-## 🏋️ Training & Evaluation
-
-Hy-VLA supports multiple training workflows, each with corresponding evaluation results.
-
-### Pre-training
-
-The VLM tower is initialized from `tencent/HY-Embodied-0.5` and the action expert is randomly initialized. Training uses the full 10K-hour UMI corpus under the flow-matching objective (Eq. 1) with history length K=1 and action chunk horizon H=50 at 10 Hz. The model is trained for 200K steps with a global batch size of 1,024.
-
-```bash
-# Single-table fast iteration
-export TABLE_NAME=table_001
-bash scripts/train_table_vlm.sh
-
-# Full corpus (64 GPUs)
-export CHIEF_IP=<chief-ip> INDEX=0
-bash scripts/train_umi_vlm.sh
-```
-
-### Supervised Fine-Tuning
-
-Starting from the pre-trained checkpoint, SFT activates the compact memory encoder (K=6 frames) and fine-tunes on task-specific demonstrations. For real-world deployment, we train for 60K steps with batch size 32; for [RoboTwin 2.0](https://github.com/robotwin-Platform/RoboTwin), we use batch size 128 with action downsampling (stride 3).
-
-```bash
-# --- Training ---
-export CHIEF_IP=<chief-ip> INDEX=0
-bash scripts/train_robotwin_umi.sh   # Fine-tune from Hy-VLA-UMI on RoboTwin
-bash scripts/train_robodojo_umi.sh   # Fine-tune from Hy-VLA-UMI on RoboDojo HDF5
-
-# --- Evaluation ---
-export ROBOTWIN_DIR=/path/to/RoboTwin
-export CKPT_PATH=tencent/Hy-Embodied-0.5-VLA-RoboTwin
-
-# Quick regression (6 tasks × 10 rollouts)
-bash scripts/eval_robotwin_test.sh
-
-# Full sweep (50 tasks × 100 rollouts, 8 GPUs)
-bash scripts/eval_robotwin_full.sh
-```
-
-> **Note:** The eval scripts automatically symlink `Hy-VLA/robotwin_eval/` → `RoboTwin/policy/hy_vla`, so that RoboTwin's `eval_policy.py` can discover the Hy-VLA policy adapter without any manual configuration.
-
-#### RoboDojo — Simulated Bimanual Manipulation
-
-RoboDojo fine-tuning uses the HDF5 layout consumed by
-`hy_vla.data.robodojo_dataset.RoboDojoVLADataset` and the config
-`hy_vla/config/dataset/robodojo_hdf5.yaml`. Generate normalization statistics
-with `scripts/compute_norm_robodojo.py`, then launch SFT:
-
-```bash
-python scripts/compute_norm_robodojo.py \
-    --hdf5-dir /path/to/robodojo/hdf5 \
-    --output /path/to/experiments/hy_vla_robodojo_umi/norm_stats.pkl \
-    --downsample-rate 1 \
-    --chunk-size 25 \
-    --umi-coord-frame
-
-CHIEF_IP=127.0.0.1 INDEX=0 NUM_MACHINES=1 NPROC_PER_NODE=8 \
-HDF5_DIR=/path/to/robodojo/hdf5 \
-EXP_ROOT=/path/to/experiments \
-NORM_PATH=/path/to/experiments/hy_vla_robodojo_umi/norm_stats.pkl \
-bash scripts/train_robodojo_umi.sh
-```
-
-For RoboDojo evaluation, use `robodojo_eval/deploy_policy.yml` and the
-`robodojo_eval.deploy_policy` hooks in your RoboDojo runner. The adapter packs
-RoboDojo observations into Hy-VLA batches and returns RoboDojo EE action
-dictionaries.
-
-#### RoboTwin 2.0 — Simulated Bimanual Manipulation
-
-| Method | Clean | Randomized |
-|---|---|---|
-| π₀ | 65.9 | 58.4 |
-| ABot-M0 | 81.2 | 80.4 |
-| π₀.₅ | 82.7 | 76.8 |
-| Qwen-VLA | 86.1 | 87.2 |
-| LingBot-VLA | 86.5 | 85.3 |
-| starVLA | 88.2 | 88.3 |
-| Motus | 88.7 | 87.0 |
-| JoyAI-RA | 90.5 | 89.3 |
-| **Hy-VLA** | **90.9** | **90.1** |
-
-*Success rate (%) averaged over 100 rollouts per task × 50 tasks. Best in **bold**.*
-
-We validate SFT across two deployment tracks:
-- **Track A (Intra-Embodiment):** Fine-tune and evaluate on the same robot (Dobot X-Trainer, 4 tasks)
-- **Track B (Cross-Embodiment):** Fine-tune only on UMI demonstrations and deploy to morphologically different robots (JAKA K1, Astribot S1)
-
-#### Track A — X-Trainer Real-World Tasks
-
-| Method | Set the Table | Fold & Store Glasses | Zip Up the Pen Case | Insert Bottles |
-|---|---|---|---|---|
-| π₀ | 79% | 67% | 48% | 80% |
-| π₀.₅ | 88% | 75% | 57% | 84% |
-| Hy-Embodied (w/o UMI pretrain) | 80% | 65% | 43% | 70% |
-| **Hy-VLA (Ours)** | **83%** | **94%** | **73%** | **94%** |
-
-*Four bimanual tasks on the Dobot X-Trainer. UMI pre-training provides significant gains on precision-critical tasks (glasses folding, zipper manipulation) compared to the baseline without UMI data.*
-
-#### Track B — Cross-Embodiment Transfer
-
-| Method | JAKA K1 · Organize Accessory | Astribot S1 · Clean Up Table |
-|---|---|---|
-| π₀ | 88% | 87% |
-| π₀.₅ | 81% | 89% |
-| Hy-Embodied (w/o UMI pretrain) | 38% | 44% |
-| **Hy-VLA (Ours)** | **90%** | **89%** |
-
-*Cross-embodiment deployment to JAKA K1 and Astribot S1, fine-tuned only on UMI demonstrations without any target-robot teleoperation data. The ablation without UMI pre-training collapses, confirming that the large-scale UMI corpus is essential for embodiment-agnostic action priors.*
-
-### RL Post-Training with FlowPRO
-
-Beyond standard SFT, Hy-VLA supports **FlowPRO** — a critic-free preference optimization algorithm *(under review, code coming soon)* that converts real-robot failure interventions into policy improvement. The RPRO loss directly contrasts preferred and dispreferred action chunks per state, with a symmetric proximal regularizer that prevents reward hacking.
-
-FlowPRO operates iteratively:
-1. **Collect** preference pairs via teleoperated intervention-and-rollback
-2. **Convert** sparse corrections into dense per-state tuples via Smooth Interpolation
-3. **Optimize** with the RPRO loss on mixed batches
-
-#### FlowPRO Results — X-Trainer Real-World Tasks
-
-| Method | Bottle | Cap | USB | Zip |
-|---|---|---|---|---|
-| DAgger | 93 ± 2.1% / 27s | 88 ± 1.8% / 29s | 86 ± 2.4% / 25s | 83 ± 2.0% / 55s |
-| π₀.₆* | 95 ± 1.5% / 24s | 95 ± 1.2% / 27s | 95 ± 1.4% / 23s | 89 ± 1.6% / 45s |
-| **RPRO (Ours)** | **99 ± 0.6% / 16s** | **99 ± 0.7% / 21s** | **98 ± 0.9% / 22s** | **94 ± 1.1% / 37s** |
-
-*Success rate (mean ± std over 3 seeds, 100 rollouts each) and mean completion time after K=3 rounds of post-training on four X-Trainer bimanual tasks. RPRO achieves near-ceiling success rates with substantially shorter completion times.*
-
-### Pre-Computing Normalization Statistics
-
-Required before the first training run:
-
-```bash
-python scripts/compute_norm_umi.py \
-    --lance-source tencent/Hy-Embodied-0.5-VLA-Data \
-    --output norm_stats.pkl
-```
-
-> The released checkpoints already ship with pre-computed norm stats. Use this script only if you are training on custom data.
-
-## 🙏 Acknowledgements
-
-We thank the Hugging Face and LeRobot communities for their infrastructure and tooling. This work builds upon [Hy-Embodied-0.5](https://github.com/Tencent-Hunyuan/HY-Embodied), [FlowPRO](https://wuyeyexvnainai.github.io/flowpro/), [OpenPi](https://github.com/Physical-Intelligence/openpi) and the [RoboTwin 2.0](https://github.com/robotwin-Platform/RoboTwin) benchmark.
-
-## 📚 Citation
-
-If you find Hy-VLA useful for your research, please cite:
-
-```bibtex
-@article{zhang2026hy,
-  title={Hy-Embodied-0.5-VLA: From Vision-Language-Action Models to a Real-World Robot Learning Stack},
-  author={Zhang, He and Xiang, Lingzhu and Lin, Haitao and Huang, Zeyu and Wang, Minghui and Zhong, Dingyan and Dong, Yubo and Wu, Yihao and Rao, Yongming and Zhang, Dongsheng and others},
-  journal={arXiv preprint arXiv:2606.14409},
-  year={2026}
+```json
+{
+  "action": "continue | switch",
+  "subtask_status": "running | completed | failed | stuck | uncertain",
+  "next_subtask": "",
+  "evidence": "short visual reason"
 }
 ```
 
-## 📜 License
+说明：
 
-Released under the **Apache-2.0 License**. See [LICENSE](https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA/blob/main/LICENSE) for full terms.
+- `confidence` 只做日志记录，不参与控制。
+- `switch` 时清空旧 instruction 下的 action cache。
+- `continue` 时保留当前 action cache。
+
+### 2.3 Visual Context
+
+当前 benchmark 的 boundary 判断使用单张当前 head-camera 图像。
+
+- 不再依赖 keyframe 控制路径。
+- 默认不做 history-based keyframe 选择。
+- `next / all` 的默认逻辑不受 keyframe 影响。
+
+### 2.4 `next` / `all` 逻辑
+
+`vlm_plan_next`：
+
+- 当前 subtask 发布给 low-level 后，立刻后台预取下一条 candidate subtask。
+- 到 boundary 时，verifier 只判断当前 subtask 是否完成。
+- 如果完成且 prefetch 已就绪，就直接发布预取结果。
+- 如果没赶上，就走同步兜底生成。
+
+`vlm_plan_all`：
+
+- episode 开头一次性生成完整 subtask list。
+- boundary 时只做 verifier 判断。
+- 如果完成，就消费缓存里的下一条 subtask。
+- 如果未完成，就保持当前 subtask 不变。
+
+## 3. Gemma4-12B 结果
+
+### 3.1 `place_burger_fries` 的 completion verifier
+
+实验名：`gemma4_status_217_20260806`
+
+- formal episodes: `n=10`
+- `boundary_to_instruction_ready` mean: `632.4 ms`
+- median: `631.9 ms`
+- min / max: `617.5 / 648.4 ms`
+- 说明：这是单张图 completion-verifier 的耗时，不含低层后续恢复执行。
+
+### 3.2 `place_burger_fries` 的 `next / all` 对比
+
+实验名：
+
+- `gemma4_mtp_vlm_plan_next_prefetch_217_20260807`
+- `gemma4_mtp_vlm_plan_all_217_20260807`
+- `gemma4_mtp_vlm_plan_all_repeated_next_217_20260807`
+
+结果：
+
+- `vlm_plan_next_prefetch`: mean `424.3 ms`, median `422.7 ms`, min / max `410.8 / 450.8 ms`
+- `vlm_plan_all`: mean `446.4 ms`, median `444.8 ms`, min / max `428.7 / 472.4 ms`
+- `vlm_plan_all_repeated_next`: mean `441.6 ms`, median `431.7 ms`, min / max `424.4 / 470.0 ms`
+
+结论：
+
+- `next` 路径更适合做边界到下一条指令的预取。
+- `all` 路径可用，但更依赖完整 subtask list 的稳定性。
+
+### 3.3 六任务 `n=10` 结果
+
+| RoboTwin task | Forced first-subtask end threshold | Actual trigger sim time / frame | Mean | Median | Std | Min / Max |
+|---|---:|---|---:|---:|---:|---:|
+| `place_burger_fries` | 2.17s | 2.20s / 55 | 779.5 ms | 786.7 ms | 90.5 ms | 653.8 / 906.2 ms |
+| `place_cans_plasticbox` | 2.25s | 2.28s / 57 | 828.1 ms | 824.4 ms | 38.9 ms | 782.5 / 894.3 ms |
+| `put_bottles_dustbin` | 4.01s | 4.04s / 101 | 1134.2 ms | 870.7 ms | 850.2 ms | 791.7 / 3551.4 ms |
+| `stack_blocks_three` | 2.25s | 2.28s / 57 | 1072.2 ms | 1083.7 ms | 83.9 ms | 914.1 / 1190.8 ms |
+| `stack_bowls_three` | 4.53s | 4.56s / 114 | 938.6 ms | 929.1 ms | 72.0 ms | 814.3 / 1037.3 ms |
+| `place_dual_shoes` | 2.61s | 2.64s / 66 | 1041.2 ms | 1025.9 ms | 34.6 ms | 991.5 / 1099.5 ms |
+
+Overall across the 6 tasks:
+
+- mean: `965.6 ms`
+- median: `899.3 ms`
+- std: `361.5 ms`
+- min / max: `653.8 / 3551.4 ms`
+
+## 4. Action cache
+
+当前 controller 会记录 high-level 切换时的 stale action cache 丢弃情况。
+
+六任务 Gemma4 MTP 结果里：
+
+- mean `stale_action_cache_discarded`: `4.33`
+- median: `4.50`
+- min / max: `1 / 6`
+- distribution:
+  - `1`: 10 samples
+  - `4`: 20 samples
+  - `5`: 10 samples
+  - `6`: 20 samples
+
+## 5. Demo 网页雏形
+
+已经加了一个静态 demo browser：
+
+- 页面：`docs/demo/index.html`
+- 数据：`docs/demo/data/demos.json`
+- 本地数据兜底：`docs/demo/data/demos.js`
+- 视频目录：`docs/demo/assets/`
+
+当前页面能展示：
+
+- 每个 RoboTwin task 的 demo slot。
+- 当前 subtask。
+- verifier 的 `same / switch` 判断。
+- 下一条 high-level instruction。
+- handoff latency。
+- action cache 行为。
+- 六任务 timing summary。
+
+网页已经附带 GitHub Pages 自动部署配置：
+
+```text
+.github/workflows/deploy-demo-pages.yml
+```
+
+仓库启用 GitHub Pages 后，公开网址为：
+
+```text
+https://233333nmc.github.io/highlow-handoff/
+```
+
+每次更新 `docs/demo/` 并推送到 `highlow-handoff-baseline` 或 `main` 后，GitHub Actions 会自动重新部署页面。视频文件和 demo 数据也会随仓库一起发布，因此后续只需要更新 `docs/demo/assets/`、`demos.json` 和 `demos.js`。
+
+后续如果策略或 demo 视频更新，只需要：
+
+1. 把视频放到 `docs/demo/assets/`。
+2. 在 `docs/demo/data/demos.json` 和 `docs/demo/data/demos.js` 中填入对应 `video` 路径。
+3. 更新 subtask、verifier output 和 timing 字段。
+
+## 6. 复现
+
+下面的命令都把缓存、日志、模型和评测结果写在 `high_level_memory` 个人目录下，不使用系统临时目录。
+
+### 6.1 目录结构
+
+建议使用以下目录布局：
+
+```text
+<WORK_ROOT>/
+├── Hy-Embodied-0.5-VLA/       # 本仓库
+├── RoboTwin/                   # RoboTwin simulator
+├── checkpoints/                # low-level / high-level checkpoint
+├── envs/                       # unified Python 3.10 evaluation environment
+├── profile_results/            # handoff logs and timing results
+├── model_cache/                # persistent Hugging Face cache
+└── runtime_cache/              # Gemma runtime cache
+```
+
+本文中的 `<WORK_ROOT>` 指：
+
+```text
+/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
+```
+
+如果换到其他机器，只需要把下面命令中的 `WORK_ROOT` 改成对应的个人工作目录。
+
+### 6.2 获取代码
+
+```bash
+export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
+cd "$WORK_ROOT"
+
+git clone -b highlow-handoff-baseline \
+  https://github.com/233333nmc/highlow-handoff.git \
+  Hy-Embodied-0.5-VLA
+
+git clone https://github.com/robotwin-Platform/RoboTwin.git RoboTwin
+cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
+```
+
+如果仓库已经存在，不需要重复 clone：
+
+```bash
+cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
+git checkout highlow-handoff-baseline
+git pull
+```
+
+### 6.3 创建 RoboTwin + Hy-VLA 评测环境
+
+评测使用统一的 Python 3.10 环境，使 RoboTwin simulator、Hy-VLA low-level policy 和 high-level handoff controller 在同一个进程中运行。
+
+前置条件：
+
+- Linux；
+- 可用的 CUDA GPU；
+- `/usr/bin/python3.10`；
+- `uv`；
+- Gemma4 MTP 复现实验需要两个当前租约可见的 GPU。
+
+如果系统还没有 `uv`，先按本机环境安装。然后运行：
+
+```bash
+export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
+cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
+
+bash scripts/install_robotwin_hyvla_eval_env.sh
+```
+
+该脚本会创建：
+
+```text
+$WORK_ROOT/envs/robotwin_hyvla_eval/
+```
+
+并安装 CUDA PyTorch、Hy-VLA 推理依赖、RoboTwin simulator 依赖以及 cuRobo。脚本内部已经把 `TMPDIR`、Hugging Face cache、uv cache 和 matplotlib cache 指向个人目录。
+
+### 6.4 下载 RoboTwin 仿真资源
+
+当前实验是 RoboTwin inference/evaluation，不需要下载 RoboTwin training demonstrations。需要下载的是 simulator 运行所需的背景、物体和 embodiment 资源。
+
+```bash
+export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
+cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
+
+bash scripts/download_robotwin_assets_persistent.sh
+```
+
+资源会保存到：
+
+```text
+$WORK_ROOT/RoboTwin/assets/
+```
+
+### 6.5 下载 low-level checkpoint
+
+Hy-VLA low-level checkpoint 来自 Hugging Face 的：
+
+```text
+tencent/Hy-Embodied-0.5-VLA-RoboTwin
+```
+
+推荐使用仓库脚本之外的持久 Hugging Face cache，并把模型保存到统一目录：
+
+```bash
+export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
+export HF_HOME="$WORK_ROOT/model_cache/huggingface"
+export HF_HUB_CACHE="$WORK_ROOT/model_cache/huggingface/hub"
+export TMPDIR="$WORK_ROOT/.cache/tmp"
+
+mkdir -p "$HF_HOME" "$HF_HUB_CACHE" "$TMPDIR"
+
+hf download tencent/Hy-Embodied-0.5-VLA-RoboTwin \
+  --local-dir "$WORK_ROOT/checkpoints/Hy-Embodied-0.5-VLA-RoboTwin"
+```
+
+最终目录应为：
+
+```text
+$WORK_ROOT/checkpoints/Hy-Embodied-0.5-VLA-RoboTwin/
+```
+
+### 6.6 下载 Gemma4-12B
+
+Gemma4 主模型使用：
+
+```text
+google/gemma-4-12B-it
+```
+
+模型条款可能要求先在 Hugging Face 页面接受许可，并在当前 shell 中配置 `HF_TOKEN`。下载命令为：
+
+```bash
+export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
+cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
+
+# 如果 Hugging Face 需要认证：
+# export HF_TOKEN=...
+
+bash scripts/download_gemma4_12b.sh
+```
+
+主模型会保存到：
+
+```text
+$WORK_ROOT/checkpoints/google/gemma-4-12B-it/
+```
+
+Gemma4 native MTP 还需要一个兼容的 assistant checkpoint。该 checkpoint 不是由 `download_gemma4_12b.sh` 自动生成的，复现实验时需要单独准备，并通过下面的路径传给 server：
+
+```text
+$WORK_ROOT/checkpoints/google/gemma-4-12B-it-assistant/
+```
+
+如果不提供 `GEMMA4_ASSISTANT_MODEL_PATH`，可以启动普通 Gemma4 inference，但不能复现本文中的 native MTP 配置。
+
+### 6.7 启动 Gemma4 API server
+
+当前 high-level controller 通过本地 OpenAI-compatible HTTP API 调用 Gemma4。启动 server 的终端保持运行，然后在另一个终端运行 RoboTwin evaluation。
+
+`GEMMA4_TRANSFORMERS_PATH` 必须指向支持 `gemma4_unified` 的 Transformers 版本目录。若该版本已经安装在脚本默认 cache 中，可以省略这一项；否则需要显式指定。
+
+```bash
+export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
+cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
+
+GEMMA4_PORT=8003 \
+GEMMA4_MODEL_PATH="$WORK_ROOT/checkpoints/google/gemma-4-12B-it" \
+GEMMA4_ASSISTANT_MODEL_PATH="$WORK_ROOT/checkpoints/google/gemma-4-12B-it-assistant" \
+GEMMA4_DEVICE=cuda:1 \
+GEMMA4_ASSISTANT_DEVICE=cuda:0 \
+GEMMA4_NUM_ASSISTANT_TOKENS=4 \
+GEMMA4_NUM_ASSISTANT_TOKENS_SCHEDULE=heuristic \
+bash scripts/serve_gemma4_12b_transformers_api.sh
+```
+
+这里的 `cuda:0` 和 `cuda:1` 是当前租约可见 GPU 的相对编号，不要手动覆盖 `CUDA_VISIBLE_DEVICES`。如果当前租约只有一张 GPU，需要改用不带 assistant checkpoint 的普通推理配置，或者申请两张可见 GPU。
+
+### 6.8 运行 `vlm_plan_next`
+
+`vlm_plan_next` 的逻辑是：当前 instruction 发布后，立即预取下一条 candidate subtask；到 boundary 时，verifier 先判断当前 subtask 是否完成，如果完成且 candidate 已经 ready，就直接发布 candidate，否则同步生成作为兜底。
+
+```bash
+export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
+cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
+
+LOG_DIR="$WORK_ROOT/profile_results/robotwin_burger_fries/gemma4_vlm_plan_next_$(date +%Y%m%d_%H%M%S)" \
+TEST_NUM=11 \
+SEED=10000 \
+TASK_NAME=place_burger_fries \
+FORCED_BOUNDARY_S=2.17 \
+MAX_FORCED_BOUNDARIES=1 \
+STOP_AFTER_MEASUREMENT_HANDOFF=False \
+HL_PLANNER_MODE=vlm_plan_next \
+HL_PROMPT_MODE=completion_status \
+HL_FORCE_VISUAL_ON_DECISION=True \
+HL_RECENT_FRAMES_LENGTH=1 \
+HL_VLM_MAX_IMAGES=1 \
+GEMMA4_SERVER_URL=http://127.0.0.1:8003 \
+bash scripts/eval_robotwin_burger_fries_forced_gemma4_12b_status.sh
+```
+
+### 6.9 运行 `vlm_plan_all`
+
+`vlm_plan_all` 的逻辑是：episode 开头一次性生成完整 subtask list；之后在 boundary 处只做 completion verifier，确认完成后消费缓存中的下一条 subtask。
+
+```bash
+export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
+cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
+
+LOG_DIR="$WORK_ROOT/profile_results/robotwin_burger_fries/gemma4_vlm_plan_all_$(date +%Y%m%d_%H%M%S)" \
+TEST_NUM=11 \
+SEED=10000 \
+TASK_NAME=place_burger_fries \
+FORCED_BOUNDARY_S=2.17 \
+MAX_FORCED_BOUNDARIES=1 \
+STOP_AFTER_MEASUREMENT_HANDOFF=False \
+HL_PLANNER_MODE=vlm_plan_all \
+HL_PROMPT_MODE=completion_status \
+HL_FORCE_VISUAL_ON_DECISION=True \
+HL_RECENT_FRAMES_LENGTH=1 \
+HL_VLM_MAX_IMAGES=1 \
+GEMMA4_SERVER_URL=http://127.0.0.1:8003 \
+bash scripts/eval_robotwin_burger_fries_forced_gemma4_12b_status.sh
+```
+
+两条命令使用相同的 RoboTwin task、2.17s forced boundary、单张当前 head-camera 图像和 completion verifier；区别只在于下一条 subtask 的规划时机。
+
+### 6.10 结果和日志位置
+
+每次评测会在 `LOG_DIR` 下写入：
+
+```text
+hierarchical.log
+hierarchical_decisions.jsonl
+```
+
+RoboTwin 的 episode 结果会写到：
+
+```text
+$WORK_ROOT/RoboTwin/eval_result/
+```
+
+当前脚本默认运行 11 个 rollout，其中 episode 0 作为额外 runtime warm-up，正式 latency 统计使用 episode 1-10。
+
+### 6.11 可选：多任务运行
+
+如果需要复现六任务 Gemma4 结果，可以使用多任务脚本，并通过 `HL_PLANNER_MODE` 选择 `vlm_plan_next` 或 `vlm_plan_all`：
+
+```bash
+export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
+cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
+
+LOG_DIR="$WORK_ROOT/profile_results/robotwin_multitask_gemma4_12b_$(date +%Y%m%d_%H%M%S)" \
+TEST_NUM=11 \
+SEED=10000 \
+HL_PLANNER_MODE=vlm_plan_next \
+HL_PROMPT_MODE=completion_status \
+HL_FORCE_VISUAL_ON_DECISION=True \
+HL_RECENT_FRAMES_LENGTH=1 \
+HL_VLM_MAX_IMAGES=1 \
+GEMMA4_SERVER_URL=http://127.0.0.1:8003 \
+bash scripts/eval_robotwin_multitask_gemma4_12b_status_n10.sh
+```
+
+## 7. 目前还在做的事
+
+- 整理 action cache 统计结果表。
+- 继续调 verifier completion criteria，减少 false negative。
+- 继续调 prompt，让 planner 输出更合适粒度的 subtask。
+
+## 8. 说明
+
+- 当前 README 只保留我们这条 RoboTwin handoff 线的工作。
+- 不再写 Hy-VLA 原论文式介绍和原始 benchmark 结果。
+- 当前结果是 latency-only，不含 full-task success。
+- 后续重点仍是 async pipeline、same/switch verifier 和 completion detection。
