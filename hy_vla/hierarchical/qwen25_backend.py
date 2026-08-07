@@ -1,4 +1,4 @@
-"""Independent Qwen2.5-VL backend for high-level robot memory decisions.
+"""Independent Qwen2.5-VL backend for high-level robot handoff decisions.
 
 The low-level Hy-VLA action model and this instruction-following VLM have
 different jobs:
@@ -6,7 +6,7 @@ different jobs:
 * Hy-VLA keeps its short visual/action history and produces fast actions.
 * Qwen2.5-VL is called only at a high-level handoff. It reads a small set of
   visual evidence frames plus the completed-subtask report, then emits the
-  next language subtask and keyframe positions as JSON.
+  next language subtask as JSON.
 
 This first implementation is deliberately synchronous so that we can measure
 real planning latency. The controller/backend interface is unchanged when the
@@ -204,7 +204,7 @@ class Qwen25VlmBackend:
 
         prompt = (
             "Warm up the high-level robot planner. Return JSON with "
-            'current_subtask="warmup", keyframe_positions=[], confidence=0.0.'
+            'current_subtask="warmup", confidence=0.0.'
         )
         # Match the largest online visual context so the warmup covers vision
         # preprocessing and attention shapes used by a real handoff.
@@ -251,10 +251,8 @@ class Qwen25VlmBackend:
     def _build_messages(images: Sequence[Any], prompt: str) -> list[dict[str, Any]]:
         response_schema = (
             "\nYou must return exactly one JSON object and no Markdown:\n"
-            '{"current_subtask": string, "keyframe_positions": [int], '
-            '"confidence": number}\n'
-            "The listed keyframe positions are 1-indexed positions in the recent "
-            "frame list. Use only visual evidence and the execution report. If the "
+            '{"current_subtask": string, "confidence": number}\n'
+            "Use only visual evidence and the execution report. If the "
             "report says completed, move to the next unfinished subtask."
         )
         content: list[dict[str, Any]] = [
@@ -273,8 +271,10 @@ class Qwen25VlmBackend:
         phase_index: int,
         phase_prompt: str,
         execution_report: ExecutionReport | None,
+        output_schema: str | None = None,
+        allow_text_only: bool = False,
     ) -> HighLevelPrediction:
-        del timestamp_s, phase_index, execution_report
+        del timestamp_s, phase_index, execution_report, output_schema, allow_text_only
         online_start = time.perf_counter_ns()
         select_start = time.perf_counter_ns()
         images, image_frame_ids = self._select_images(

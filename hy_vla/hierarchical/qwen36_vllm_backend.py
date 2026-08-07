@@ -40,7 +40,12 @@ class Qwen36VllmBackend:
         jpeg_quality: int = 90,
         image_selection: str = "tail",
         image_max_side: int = 0,
+        output_schema: str = "legacy",
         warmup_calls: int = 3,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        include_chat_template_kwargs: bool = True,
+        backend_label: str = "Qwen3.6 vLLM",
+        mtp_speculative_tokens: int = 1,
     ) -> None:
         self.server_url = self._normalize_server_url(server_url)
         self.model_name = str(model_name)
@@ -56,13 +61,39 @@ class Qwen36VllmBackend:
             "recent_tail",
             "uniform",
             "latest",
+            "first_latest",
+            "diverse",
         }:
             raise ValueError(
                 "image_selection must be one of 'tail', 'all', "
-                "'recent_tail', 'uniform', or 'latest'; "
+                "'recent_tail', 'uniform', 'latest', 'first_latest', "
+                "or 'diverse'; "
                 f"got {image_selection!r}"
             )
         self.image_max_side = max(0, int(image_max_side))
+        self.output_schema = str(output_schema).strip().lower()
+        if self.output_schema not in {
+            "legacy",
+            "minimal",
+            "minimal_status",
+            "completion_status",
+            "subtask_plan",
+        }:
+            raise ValueError(
+                "output_schema must be 'legacy', 'minimal', 'minimal_status', "
+                "'completion_status', or 'subtask_plan', "
+                f"got {output_schema!r}"
+            )
+        if include_chat_template_kwargs:
+            self.chat_template_kwargs = (
+                {"enable_thinking": False}
+                if chat_template_kwargs is None
+                else dict(chat_template_kwargs)
+            )
+        else:
+            self.chat_template_kwargs = {}
+        self.backend_label = str(backend_label)
+        self.mtp_speculative_tokens = max(0, int(mtp_speculative_tokens))
         self.session = requests.Session()
         self.startup_warmup_ms = self._warmup(max(0, int(warmup_calls)))
 
@@ -140,6 +171,60 @@ class Qwen36VllmBackend:
             unique.append(frame)
         return unique
 
+    def _frame_signature(self, frame: FrameRecord) -> np.ndarray:
+        image = frame.camera_images.get(self.camera_name)
+        if image is None:
+            return np.zeros((32 * 32,), dtype=np.float32)
+        pil_image = self._as_rgb_image(image).convert("L").resize((32, 32))
+        return np.asarray(pil_image, dtype=np.float32).reshape(-1) / 255.0
+
+    @staticmethod
+    def _select_uniform_records(
+        candidates: Sequence[FrameRecord],
+        *,
+        max_count: int,
+    ) -> list[FrameRecord]:
+        if len(candidates) <= max_count:
+            return list(candidates)
+        if max_count <= 1:
+            return [candidates[-1]]
+        indices = [
+            round(i * (len(candidates) - 1) / (max_count - 1))
+            for i in range(max_count)
+        ]
+        return [candidates[index] for index in indices]
+
+    def _select_diverse_records(
+        self,
+        candidates: Sequence[FrameRecord],
+    ) -> list[FrameRecord]:
+        if len(candidates) <= self.max_images:
+            return list(candidates)
+        if self.max_images <= 1:
+            return [candidates[-1]]
+
+        signatures = [self._frame_signature(frame) for frame in candidates]
+        selected_indices: set[int] = {len(candidates) - 1}
+        while len(selected_indices) < self.max_images:
+            best_index = None
+            best_score = float("-inf")
+            for index, signature in enumerate(signatures):
+                if index in selected_indices:
+                    continue
+                score = min(
+                    float(np.mean(np.abs(signature - signatures[selected])))
+                    for selected in selected_indices
+                )
+                # Prefer later frames when two candidates are visually similar.
+                score += index * 1e-6
+                if score > best_score:
+                    best_index = index
+                    best_score = score
+            if best_index is None:
+                break
+            selected_indices.add(best_index)
+        return [candidates[index] for index in sorted(selected_indices)]
+
     def _select_frame_records(
         self,
         *,
@@ -154,21 +239,32 @@ class Qwen36VllmBackend:
         if self.image_selection == "latest":
             return [recent[-1] if recent else all_frames[-1]]
 
+        if self.image_selection == "first_latest":
+            candidates = recent or all_frames
+            if self.max_images <= 1 or len(candidates) <= 1:
+                return [candidates[-1]]
+            if self.max_images == 2:
+                return [candidates[0], candidates[-1]]
+            middle = self._select_uniform_records(
+                candidates[1:-1],
+                max_count=self.max_images - 2,
+            )
+            return [candidates[0], *middle, candidates[-1]]
+
         if self.image_selection == "recent_tail":
             candidates = recent or all_frames
             return candidates[-self.max_images :]
 
         if self.image_selection == "uniform":
             candidates = recent or all_frames
-            if len(candidates) <= self.max_images:
-                return candidates
-            if self.max_images == 1:
-                return [candidates[-1]]
-            indices = [
-                round(i * (len(candidates) - 1) / (self.max_images - 1))
-                for i in range(self.max_images)
-            ]
-            return [candidates[index] for index in indices]
+            return self._select_uniform_records(
+                candidates,
+                max_count=self.max_images,
+            )
+
+        if self.image_selection == "diverse":
+            candidates = recent or all_frames
+            return self._select_diverse_records(candidates)
 
         if self.image_selection == "all":
             return all_frames[: self.max_images]
@@ -202,8 +298,53 @@ class Qwen36VllmBackend:
             recent_positions.append(recent_position_by_id.get(int(frame.frame_id)))
         return images, frame_ids, recent_positions
 
-    @staticmethod
-    def _response_schema(recent_positions: Sequence[int | None]) -> str:
+    def _response_schema(
+        self,
+        recent_positions: Sequence[int | None],
+        *,
+        output_schema: str | None = None,
+    ) -> str:
+        schema = self.output_schema if output_schema is None else str(output_schema)
+        if schema == "subtask_plan":
+            return (
+                "\nReturn exactly one JSON object and no Markdown:\n"
+                '{"subtasks": [string], "confidence": number}\n'
+                "The subtasks must be an ordered list of low-level robot "
+                "instructions. Do not include explanations."
+            )
+        if schema == "completion_status":
+            return (
+                "\nReturn exactly one JSON object and no Markdown:\n"
+                '{"decision": "same" | "switch", '
+                '"status": "running" | "completed" | "failed" | "stuck" | "uncertain", '
+                '"next_subtask": string, '
+                '"evidence": string}\n'
+                "Use decision='same' when the current low-level subtask should "
+                "keep running. Use decision='switch' only when the provided "
+                "image(s) show the current low-level subtask is completed. Keep "
+                "next_subtask as an empty string unless you have a direct "
+                "suggestion. Evidence must be one short visual reason."
+            )
+        if schema == "minimal_status":
+            return (
+                "\nReturn exactly one JSON object and no Markdown:\n"
+                '{"action": "continue" | "switch", '
+                '"next_subtask": string, '
+                '"subtask_status": "unfinished" | "completed" | "unknown"}\n'
+                "Use action='continue' when the current subtask appears "
+                "unfinished and the low-level policy should keep executing "
+                "the current instruction. Use action='switch' only when the "
+                "system should publish next_subtask to the low-level policy."
+            )
+        if schema == "minimal":
+            return (
+                "\nReturn exactly one JSON object and no Markdown:\n"
+                '{"next_subtask": string}\n'
+                "The value must be the next low-level robot instruction. "
+                "Use only the task instruction, visual evidence, and execution "
+                "summary. If the current subtask appears unfinished, return "
+                "the current subtask or a short continuation instruction."
+            )
         evidence_mapping = ", ".join(
             f"image {index} -> recent position {position}"
             if position is not None
@@ -212,14 +353,10 @@ class Qwen36VllmBackend:
         ) or "none"
         return (
             "\nReturn exactly one JSON object and no Markdown:\n"
-            '{"current_subtask": string, "keyframe_positions": [int], '
-            '"confidence": number}\n'
-            "The listed keyframe positions are 1-indexed positions in the full recent "
-            "frame list, not positions in the compressed image list. The compressed "
-            f"image mapping is: {evidence_mapping}. Only select a recent-frame "
-            "position when recording a keyframe. Use only visual evidence and the "
-            "execution report. If the report says completed, move to the next "
-            "unfinished subtask."
+            '{"current_subtask": string, "confidence": number}\n'
+            "Use only visual evidence and the execution report. If the report "
+            "says completed, move to the next unfinished subtask. The compressed "
+            f"image mapping is: {evidence_mapping}."
         )
 
     def _build_payload(
@@ -228,6 +365,7 @@ class Qwen36VllmBackend:
         images: Sequence[Any],
         prompt: str,
         recent_positions: Sequence[int | None],
+        output_schema: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, float]]:
         content: list[dict[str, Any]] = []
         encoded_bytes = 0
@@ -249,7 +387,11 @@ class Qwen36VllmBackend:
         content.append(
             {
                 "type": "text",
-                "text": prompt + self._response_schema(recent_positions),
+                "text": prompt
+                + self._response_schema(
+                    recent_positions,
+                    output_schema=output_schema,
+                ),
             }
         )
         payload = {
@@ -259,10 +401,9 @@ class Qwen36VllmBackend:
             "top_p": 1.0,
             "max_tokens": self.max_new_tokens,
             "response_format": {"type": "json_object"},
-            # Qwen3.6 defaults to thinking mode. A robot handoff needs the
-            # short structured answer, not a latent reasoning transcript.
-            "chat_template_kwargs": {"enable_thinking": False},
         }
+        if self.chat_template_kwargs:
+            payload["chat_template_kwargs"] = self.chat_template_kwargs
         image_count = len(widths)
         return payload, {
             "image_count": float(image_count),
@@ -282,12 +423,14 @@ class Qwen36VllmBackend:
         images: Sequence[Any],
         prompt: str,
         recent_positions: Sequence[int | None],
+        output_schema: str | None = None,
     ) -> tuple[str, dict[str, float]]:
         encode_started = time.perf_counter_ns()
         payload, payload_metrics = self._build_payload(
             images=images,
             prompt=prompt,
             recent_positions=recent_positions,
+            output_schema=output_schema,
         )
         encode_finished = time.perf_counter_ns()
 
@@ -300,7 +443,9 @@ class Qwen36VllmBackend:
             )
         except requests.RequestException as exc:
             raise RuntimeError(
-                f"Qwen3.6 vLLM request failed for {self.server_url}: {exc}"
+                f"{self.backend_label} request failed for {self.server_url}: {exc}. "
+                "Make sure the matching vLLM service is running and fully ready "
+                "before starting the RoboTwin eval script."
             ) from exc
         request_finished = time.perf_counter_ns()
 
@@ -311,13 +456,13 @@ class Qwen36VllmBackend:
         except (KeyError, TypeError, ValueError, requests.HTTPError) as exc:
             excerpt = response.text[:1000]
             raise RuntimeError(
-                "Qwen3.6 vLLM returned an invalid chat-completions response: "
+                f"{self.backend_label} returned an invalid chat-completions response: "
                 f"{excerpt}"
             ) from exc
 
         if not isinstance(content, str) or not content.strip():
             raise RuntimeError(
-                "Qwen3.6 vLLM response did not contain non-empty message content."
+                f"{self.backend_label} response did not contain non-empty message content."
             )
         usage = body.get("usage")
         usage_metrics = {
@@ -347,10 +492,33 @@ class Qwen36VllmBackend:
             Image.new("RGB", (448, 448), color=(0, 0, 0))
             for _ in range(self.max_images)
         ]
-        prompt = (
-            "Warm up the high-level robot planner. Return "
-            '{"current_subtask":"warmup","keyframe_positions":[],"confidence":0.0}.'
-        )
+        if self.output_schema == "subtask_plan":
+            prompt = (
+                "Warm up the high-level robot planner. Return "
+                '{"subtasks":["warmup"],"confidence":0.0}.'
+            )
+        elif self.output_schema == "completion_status":
+            prompt = (
+                "Warm up the high-level robot completion verifier. Return "
+                '{"decision":"same","status":"uncertain",'
+                '"next_subtask":"","evidence":"warmup"}.'
+            )
+        elif self.output_schema == "minimal_status":
+            prompt = (
+                "Warm up the high-level robot planner. Return "
+                '{"action":"switch","next_subtask":"warmup",'
+                '"subtask_status":"unknown"}.'
+            )
+        elif self.output_schema == "minimal":
+            prompt = (
+                "Warm up the high-level robot planner. Return "
+                '{"next_subtask":"warmup"}.'
+            )
+        else:
+            prompt = (
+                "Warm up the high-level robot planner. Return "
+                '{"current_subtask":"warmup","confidence":0.0}.'
+            )
         started = time.perf_counter_ns()
         for _ in range(warmup_calls):
             self._request(
@@ -371,6 +539,8 @@ class Qwen36VllmBackend:
         phase_index: int,
         phase_prompt: str,
         execution_report: ExecutionReport | None,
+        output_schema: str | None = None,
+        allow_text_only: bool = False,
     ) -> HighLevelPrediction:
         del timestamp_s, phase_index, execution_report
         online_started = time.perf_counter_ns()
@@ -380,7 +550,7 @@ class Qwen36VllmBackend:
             recent_frames=recent_frames,
         )
         select_finished = time.perf_counter_ns()
-        if not images:
+        if not images and not allow_text_only:
             return HighLevelPrediction(
                 current_subtask=phase_prompt,
                 confidence=0.0,
@@ -388,7 +558,7 @@ class Qwen36VllmBackend:
                 parse_ok=False,
                 parse_error=(
                     f"no {self.camera_name!r} visual evidence available for "
-                    "the Qwen3.6 vLLM backend"
+                    f"the {self.backend_label} backend"
                 ),
                 timing_ms={
                     "select_images": self._elapsed_ms(
@@ -404,6 +574,7 @@ class Qwen36VllmBackend:
             images=images,
             prompt=prompt,
             recent_positions=recent_positions,
+            output_schema=output_schema,
         )
         parse_started = time.perf_counter_ns()
         prediction = parse_high_level_prediction_text(
@@ -413,9 +584,12 @@ class Qwen36VllmBackend:
         )
         parse_finished = time.perf_counter_ns()
         online_finished = time.perf_counter_ns()
-        prediction.raw_text = (
-            f"evidence_frame_ids={image_frame_ids}\n{prediction.raw_text}"
+        evidence_prefix = (
+            f"evidence_frame_ids={image_frame_ids}"
+            if image_frame_ids
+            else "evidence_frame_ids=[]; text_only=true"
         )
+        prediction.raw_text = f"{evidence_prefix}\n{prediction.raw_text}"
         prediction.timing_ms.update(
             {
                 "select_images": self._elapsed_ms(select_started, select_finished),
@@ -424,8 +598,8 @@ class Qwen36VllmBackend:
                 "online_total": self._elapsed_ms(online_started, online_finished),
                 "startup_warmup": float(self.startup_warmup_ms),
                 # The vLLM server is launched with one native MTP layer.
-                "mtp_enabled": 1.0,
-                "mtp_speculative_tokens": 1.0,
+                "mtp_enabled": 1.0 if self.mtp_speculative_tokens > 0 else 0.0,
+                "mtp_speculative_tokens": float(self.mtp_speculative_tokens),
             }
         )
         return prediction

@@ -29,6 +29,13 @@ CALIBRATION_MAX_SIM_TIME_S=${CALIBRATION_MAX_SIM_TIME_S:-0.0}
 STOP_AFTER_MEASUREMENT_HANDOFF=${STOP_AFTER_MEASUREMENT_HANDOFF:-False}
 INSTRUCTION_MODE=${INSTRUCTION_MODE:-subtask}
 HL_BACKEND=${HL_BACKEND:-scripted}
+HL_PROMPT_MODE=${HL_PROMPT_MODE:-legacy}
+HL_PLANNER_MODE=${HL_PLANNER_MODE:-inline_vlm}
+HL_ASYNC_ENABLED=${HL_ASYNC_ENABLED:-False}
+HL_ASYNC_DROP_STALE_S=${HL_ASYNC_DROP_STALE_S:-0.0}
+HL_FORCE_VISUAL_ON_DECISION=${HL_FORCE_VISUAL_ON_DECISION:-False}
+HL_VISUAL_CONTEXT_MODE=${HL_VISUAL_CONTEXT_MODE:-recent}
+HL_RECENT_FRAMES_LENGTH=${HL_RECENT_FRAMES_LENGTH:-8}
 HL_VLM_MAX_IMAGES=${HL_VLM_MAX_IMAGES:-8}
 HL_VLM_MAX_NEW_TOKENS=${HL_VLM_MAX_NEW_TOKENS:-160}
 QWEN_MODEL_PATH=${QWEN_MODEL_PATH:-"${WORK_ROOT}/checkpoints/Qwen2.5-VL-32B-Instruct"}
@@ -42,6 +49,23 @@ QWEN36_REQUEST_TIMEOUT_S=${QWEN36_REQUEST_TIMEOUT_S:-120}
 QWEN36_JPEG_QUALITY=${QWEN36_JPEG_QUALITY:-90}
 QWEN36_IMAGE_SELECTION=${QWEN36_IMAGE_SELECTION:-tail}
 QWEN36_IMAGE_MAX_SIDE=${QWEN36_IMAGE_MAX_SIDE:-0}
+QWEN36_OUTPUT_SCHEMA=${QWEN36_OUTPUT_SCHEMA:-legacy}
+QWEN36_MTP_SPECULATIVE_TOKENS=${QWEN36_MTP_SPECULATIVE_TOKENS:-1}
+QWEN35_SERVER_URL=${QWEN35_SERVER_URL:-http://127.0.0.1:8001}
+QWEN35_MODEL_NAME=${QWEN35_MODEL_NAME:-qwen3.5-9b-mtp}
+QWEN35_REQUEST_TIMEOUT_S=${QWEN35_REQUEST_TIMEOUT_S:-120}
+QWEN35_JPEG_QUALITY=${QWEN35_JPEG_QUALITY:-90}
+QWEN35_IMAGE_SELECTION=${QWEN35_IMAGE_SELECTION:-latest}
+QWEN35_IMAGE_MAX_SIDE=${QWEN35_IMAGE_MAX_SIDE:-0}
+QWEN35_OUTPUT_SCHEMA=${QWEN35_OUTPUT_SCHEMA:-minimal_status}
+QWEN35_MTP_SPECULATIVE_TOKENS=${QWEN35_MTP_SPECULATIVE_TOKENS:-2}
+GEMMA4_SERVER_URL=${GEMMA4_SERVER_URL:-http://127.0.0.1:8002}
+GEMMA4_MODEL_NAME=${GEMMA4_MODEL_NAME:-gemma-4-12B-it}
+GEMMA4_REQUEST_TIMEOUT_S=${GEMMA4_REQUEST_TIMEOUT_S:-120}
+GEMMA4_JPEG_QUALITY=${GEMMA4_JPEG_QUALITY:-90}
+GEMMA4_IMAGE_SELECTION=${GEMMA4_IMAGE_SELECTION:-latest}
+GEMMA4_IMAGE_MAX_SIDE=${GEMMA4_IMAGE_MAX_SIDE:-0}
+GEMMA4_OUTPUT_SCHEMA=${GEMMA4_OUTPUT_SCHEMA:-minimal_status}
 
 mkdir -p \
   "${LOG_DIR}" \
@@ -98,6 +122,12 @@ echo "Calibration limit  : ${CALIBRATION_MAX_SIM_TIME_S}s"
 echo "Stop after measure : ${STOP_AFTER_MEASUREMENT_HANDOFF}"
 echo "Instruction mode   : ${INSTRUCTION_MODE}"
 echo "High-level backend : ${HL_BACKEND}"
+echo "Prompt mode        : ${HL_PROMPT_MODE}"
+echo "Planner mode       : ${HL_PLANNER_MODE}"
+echo "Async high-level   : ${HL_ASYNC_ENABLED}, drop_stale=${HL_ASYNC_DROP_STALE_S}s"
+echo "Force decision img : ${HL_FORCE_VISUAL_ON_DECISION}"
+echo "Visual context     : ${HL_VISUAL_CONTEXT_MODE}"
+echo "Recent frame window: ${HL_RECENT_FRAMES_LENGTH}"
 if [[ "${HL_BACKEND}" == "qwen25_vl" ]]; then
   echo "Qwen checkpoint    : ${QWEN_MODEL_PATH}"
   echo "Qwen device        : ${QWEN_DEVICE}"
@@ -105,6 +135,19 @@ elif [[ "${HL_BACKEND}" == "qwen36_vllm_mtp" ]]; then
   echo "Qwen3.6 server     : ${QWEN36_SERVER_URL}"
   echo "Qwen3.6 model      : ${QWEN36_MODEL_NAME}"
   echo "Qwen3.6 images     : ${QWEN36_IMAGE_SELECTION}, max_side=${QWEN36_IMAGE_MAX_SIDE}"
+  echo "Qwen3.6 schema     : ${QWEN36_OUTPUT_SCHEMA}"
+  echo "Qwen3.6 MTP tokens : ${QWEN36_MTP_SPECULATIVE_TOKENS}"
+elif [[ "${HL_BACKEND}" == "qwen35_vllm_mtp" ]]; then
+  echo "Qwen3.5 server     : ${QWEN35_SERVER_URL}"
+  echo "Qwen3.5 model      : ${QWEN35_MODEL_NAME}"
+  echo "Qwen3.5 images     : ${QWEN35_IMAGE_SELECTION}, max_side=${QWEN35_IMAGE_MAX_SIDE}"
+  echo "Qwen3.5 schema     : ${QWEN35_OUTPUT_SCHEMA}"
+  echo "Qwen3.5 MTP tokens : ${QWEN35_MTP_SPECULATIVE_TOKENS}"
+elif [[ "${HL_BACKEND}" == "gemma4_vllm" ]]; then
+  echo "Gemma4 server      : ${GEMMA4_SERVER_URL}"
+  echo "Gemma4 model       : ${GEMMA4_MODEL_NAME}"
+  echo "Gemma4 images      : ${GEMMA4_IMAGE_SELECTION}, max_side=${GEMMA4_IMAGE_MAX_SIDE}"
+  echo "Gemma4 schema      : ${GEMMA4_OUTPUT_SCHEMA}"
 fi
 
 (
@@ -124,6 +167,12 @@ fi
       --hierarchical_enabled True \
       --hierarchical_instruction_mode "${INSTRUCTION_MODE}" \
       --hierarchical_handoff_trigger "${HANDOFF_TRIGGER}" \
+      --hierarchical_prompt_mode "${HL_PROMPT_MODE}" \
+      --hierarchical_planner_mode "${HL_PLANNER_MODE}" \
+      --hierarchical_async_enabled "${HL_ASYNC_ENABLED}" \
+      --hierarchical_async_drop_stale_s "${HL_ASYNC_DROP_STALE_S}" \
+      --hierarchical_force_visual_on_decision "${HL_FORCE_VISUAL_ON_DECISION}" \
+      --hierarchical_visual_context_mode "${HL_VISUAL_CONTEXT_MODE}" \
       --hierarchical_oracle_stability_steps "${ORACLE_STABILITY_STEPS}" \
       --hierarchical_stop_after_oracle_handoff "${STOP_AFTER_ORACLE_HANDOFF}" \
       --hierarchical_calibration_max_sim_time_s "${CALIBRATION_MAX_SIM_TIME_S}" \
@@ -144,11 +193,27 @@ fi
       --hierarchical_qwen36_jpeg_quality "${QWEN36_JPEG_QUALITY}" \
       --hierarchical_qwen36_image_selection "${QWEN36_IMAGE_SELECTION}" \
       --hierarchical_qwen36_image_max_side "${QWEN36_IMAGE_MAX_SIDE}" \
+      --hierarchical_qwen36_output_schema "${QWEN36_OUTPUT_SCHEMA}" \
+      --hierarchical_qwen36_mtp_speculative_tokens "${QWEN36_MTP_SPECULATIVE_TOKENS}" \
+      --hierarchical_qwen35_server_url "${QWEN35_SERVER_URL}" \
+      --hierarchical_qwen35_model_name "${QWEN35_MODEL_NAME}" \
+      --hierarchical_qwen35_request_timeout_s "${QWEN35_REQUEST_TIMEOUT_S}" \
+      --hierarchical_qwen35_jpeg_quality "${QWEN35_JPEG_QUALITY}" \
+      --hierarchical_qwen35_image_selection "${QWEN35_IMAGE_SELECTION}" \
+      --hierarchical_qwen35_image_max_side "${QWEN35_IMAGE_MAX_SIDE}" \
+      --hierarchical_qwen35_output_schema "${QWEN35_OUTPUT_SCHEMA}" \
+      --hierarchical_qwen35_mtp_speculative_tokens "${QWEN35_MTP_SPECULATIVE_TOKENS}" \
+      --hierarchical_gemma4_server_url "${GEMMA4_SERVER_URL}" \
+      --hierarchical_gemma4_model_name "${GEMMA4_MODEL_NAME}" \
+      --hierarchical_gemma4_request_timeout_s "${GEMMA4_REQUEST_TIMEOUT_S}" \
+      --hierarchical_gemma4_jpeg_quality "${GEMMA4_JPEG_QUALITY}" \
+      --hierarchical_gemma4_image_selection "${GEMMA4_IMAGE_SELECTION}" \
+      --hierarchical_gemma4_image_max_side "${GEMMA4_IMAGE_MAX_SIDE}" \
+      --hierarchical_gemma4_output_schema "${GEMMA4_OUTPUT_SCHEMA}" \
       --hierarchical_history_fps 1.0 \
       --hierarchical_source_fps 25.0 \
-      --hierarchical_recent_frames_length 8 \
+      --hierarchical_recent_frames_length "${HL_RECENT_FRAMES_LENGTH}" \
       --hierarchical_memory_length 8 \
-      --hierarchical_keyframe_merge_distance 5 \
       --hierarchical_log_path "${HL_LOG_PATH}" \
   2>&1 | sed -u 's/\r/\n/g' | sed -u '/step: /d'
 ) | tee "${LOG_PATH}"

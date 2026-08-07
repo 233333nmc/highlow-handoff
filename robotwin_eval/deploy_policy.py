@@ -32,6 +32,7 @@ RoboTwin policy slot) and point ``--config`` at the bundled
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import time
 from pathlib import Path
@@ -42,6 +43,8 @@ import numpy as np
 from hy_vla.hierarchical import (
     BurgerFriesHighLevelController,
     FrameRecord,
+    Gemma4VllmBackend,
+    HighLevelRequest,
     Qwen25VlmBackend,
     Qwen36VllmBackend,
     SharedHunyuanVlmBackend,
@@ -199,6 +202,19 @@ def reset_model(model: HyVLAPolicyWrapper) -> str:
         model.high_level_current_instruction = None
         model.high_level_decisions = []
         model.pending_instruction_handoff = None
+        future = getattr(model, "hierarchical_async_future", None)
+        if future is not None and not future.done():
+            future.cancel()
+        model.hierarchical_async_future = None
+        model.hierarchical_async_request = None
+        model.hierarchical_async_request_id = int(
+            getattr(model, "hierarchical_async_request_id", 0)
+        ) + 1
+        prefetch_future = getattr(model, "hierarchical_prefetch_future", None)
+        if prefetch_future is not None and not prefetch_future.done():
+            prefetch_future.cancel()
+        model.hierarchical_prefetch_future = None
+        model.hierarchical_prefetch_request = None
         model.hierarchical_oracle_streak = 0
         model.hierarchical_oracle_handoff_fired = False
         model.hierarchical_handoff_fired = False
@@ -308,11 +324,94 @@ def _maybe_attach_hierarchical_controller(
             image_max_side=int(
                 usr_args.get("hierarchical_qwen36_image_max_side", 0)
             ),
+            output_schema=str(
+                usr_args.get("hierarchical_qwen36_output_schema", "legacy")
+            ),
+            mtp_speculative_tokens=int(
+                usr_args.get("hierarchical_qwen36_mtp_speculative_tokens", 1)
+            ),
+        )
+    elif backend_name == "qwen35_vllm_mtp":
+        qwen_server_url = usr_args.get("hierarchical_qwen35_server_url")
+        if not qwen_server_url:
+            raise ValueError(
+                "hierarchical_qwen35_server_url is required when "
+                "hierarchical_backend=qwen35_vllm_mtp"
+            )
+        backend = Qwen36VllmBackend(
+            server_url=str(qwen_server_url),
+            model_name=str(
+                usr_args.get(
+                    "hierarchical_qwen35_model_name",
+                    "qwen3.5-9b-mtp",
+                )
+            ),
+            camera_name=str(
+                usr_args.get("hierarchical_vlm_camera", "head_camera")
+            ),
+            max_images=int(usr_args.get("hierarchical_vlm_max_images", 6)),
+            max_new_tokens=int(
+                usr_args.get("hierarchical_vlm_max_new_tokens", 64)
+            ),
+            request_timeout_s=float(
+                usr_args.get("hierarchical_qwen35_request_timeout_s", 120.0)
+            ),
+            jpeg_quality=int(
+                usr_args.get("hierarchical_qwen35_jpeg_quality", 90)
+            ),
+            image_selection=str(
+                usr_args.get("hierarchical_qwen35_image_selection", "tail")
+            ),
+            image_max_side=int(
+                usr_args.get("hierarchical_qwen35_image_max_side", 0)
+            ),
+            output_schema=str(
+                usr_args.get("hierarchical_qwen35_output_schema", "legacy")
+            ),
+            backend_label="Qwen3.5 vLLM",
+            mtp_speculative_tokens=int(
+                usr_args.get("hierarchical_qwen35_mtp_speculative_tokens", 2)
+            ),
+        )
+    elif backend_name == "gemma4_vllm":
+        backend = Gemma4VllmBackend(
+            server_url=str(
+                usr_args.get(
+                    "hierarchical_gemma4_server_url",
+                    "http://127.0.0.1:8002",
+                )
+            ),
+            model_name=str(
+                usr_args.get("hierarchical_gemma4_model_name", "gemma-4-12B-it")
+            ),
+            camera_name=str(
+                usr_args.get("hierarchical_vlm_camera", "head_camera")
+            ),
+            max_images=int(usr_args.get("hierarchical_vlm_max_images", 1)),
+            max_new_tokens=int(
+                usr_args.get("hierarchical_vlm_max_new_tokens", 48)
+            ),
+            request_timeout_s=float(
+                usr_args.get("hierarchical_gemma4_request_timeout_s", 120.0)
+            ),
+            jpeg_quality=int(
+                usr_args.get("hierarchical_gemma4_jpeg_quality", 90)
+            ),
+            image_selection=str(
+                usr_args.get("hierarchical_gemma4_image_selection", "latest")
+            ),
+            image_max_side=int(
+                usr_args.get("hierarchical_gemma4_image_max_side", 0)
+            ),
+            output_schema=str(
+                usr_args.get("hierarchical_gemma4_output_schema", "minimal_status")
+            ),
         )
     elif backend_name != "scripted":
         raise ValueError(
             "hierarchical_backend must be 'scripted', 'shared_hunyuan_vlm', "
-            "'qwen25_vl', or 'qwen36_vllm_mtp', "
+            "'qwen25_vl', 'qwen35_vllm_mtp', 'qwen36_vllm_mtp', "
+            "or 'gemma4_vllm', "
             f"got {backend_name!r}"
         )
 
@@ -351,12 +450,19 @@ def _maybe_attach_hierarchical_controller(
         recent_frames_length=int(usr_args.get("hierarchical_recent_frames_length", 8)),
         history_fps=float(usr_args.get("hierarchical_history_fps", 1.0)),
         source_fps=float(usr_args.get("hierarchical_source_fps", 25.0)),
-        keyframe_merge_distance=int(usr_args.get("hierarchical_keyframe_merge_distance", 5)),
         memory_length=int(usr_args.get("hierarchical_memory_length", 8)),
         max_memory_frames=int(usr_args.get("hierarchical_max_memory_frames", 256)),
+        prompt_mode=str(usr_args.get("hierarchical_prompt_mode", "legacy")),
+        planner_mode=str(usr_args.get("hierarchical_planner_mode", "inline_vlm")),
+        visual_context_mode=str(
+            usr_args.get("hierarchical_visual_context_mode", "recent")
+        ),
         backend=backend,
     )
     model.high_level_controller = controller
+    model.hierarchical_planner_mode = str(
+        usr_args.get("hierarchical_planner_mode", "inline_vlm")
+    )
     model.high_level_instruction_mode = str(
         usr_args.get("hierarchical_instruction_mode", "subtask")
     )
@@ -364,6 +470,35 @@ def _maybe_attach_hierarchical_controller(
     model.high_level_decisions = []
     model.hierarchical_task_profile = profile
     model.hierarchical_handoff_trigger = handoff_trigger
+    model.hierarchical_async_enabled = _as_bool(
+        usr_args.get("hierarchical_async_enabled", False)
+    )
+    model.hierarchical_async_executor = (
+        ThreadPoolExecutor(max_workers=1)
+        if bool(model.hierarchical_async_enabled)
+        else None
+    )
+    model.hierarchical_async_future = None
+    model.hierarchical_async_request = None
+    model.hierarchical_async_request_id = 0
+    prefetch_planner_enabled = (
+        str(model.hierarchical_planner_mode).strip().lower() == "vlm_plan_next"
+    )
+    model.hierarchical_prefetch_executor = (
+        ThreadPoolExecutor(max_workers=1)
+        if prefetch_planner_enabled
+        else None
+    )
+    model.hierarchical_prefetch_future = None
+    model.hierarchical_prefetch_request = None
+    model.hierarchical_prefetch_request_id = 0
+    model.hierarchical_async_drop_stale_s = max(
+        0.0,
+        float(usr_args.get("hierarchical_async_drop_stale_s", 0.0)),
+    )
+    model.hierarchical_force_visual_on_decision = _as_bool(
+        usr_args.get("hierarchical_force_visual_on_decision", False)
+    )
     model.hierarchical_oracle_stability_steps = max(
         1,
         int(usr_args.get("hierarchical_oracle_stability_steps", 3)),
@@ -449,12 +584,14 @@ def _maybe_trigger_oracle_handoff(
         getattr(model, "hierarchical_oracle_stability_steps", 3)
     )
     instruction_update_started = time.perf_counter_ns()
+    action_cache_before = _action_cache_len(model)
     model.high_level_current_instruction = _format_low_level_instruction(
         TASK_ENV.get_instruction(),
         decision,
         mode=getattr(model, "high_level_instruction_mode", "subtask"),
     )
     stale_action_count = model.invalidate_action_cache()
+    action_cache_after = _action_cache_len(model)
     instruction_update_finished = time.perf_counter_ns()
     decision.timing_ms["instruction_update_total"] = (
         instruction_update_finished - instruction_update_started
@@ -462,7 +599,17 @@ def _maybe_trigger_oracle_handoff(
     decision.timing_ms["handoff_to_instruction_ready"] = (
         instruction_update_finished - handoff_started
     ) / 1_000_000.0
+    decision.timing_ms["action_cache_len_before_high_level_commit"] = float(
+        action_cache_before
+    )
+    decision.timing_ms["action_cache_len_after_high_level_commit"] = float(
+        action_cache_after
+    )
     decision.timing_ms["stale_action_cache_discarded"] = float(stale_action_count)
+    decision.timing_ms["action_cache_cleared"] = (
+        1.0 if stale_action_count > 0 else 0.0
+    )
+    decision.timing_ms["same_decision_kept_action_cache"] = 0.0
     model.pending_instruction_handoff = {
         "decision": decision,
         "frame_id": event_frame_id,
@@ -481,6 +628,282 @@ def _maybe_trigger_oracle_handoff(
     model.hierarchical_handoff_fired = True
 
 
+def _predict_high_level_request(controller, request: HighLevelRequest):
+    return controller.predict_request(request)
+
+
+def _poll_prefetch_next_planner(
+    model: HyVLAPolicyWrapper,
+    *,
+    timestamp_s: float,
+) -> None:
+    future: Future | None = getattr(model, "hierarchical_prefetch_future", None)
+    request: HighLevelRequest | None = getattr(
+        model,
+        "hierarchical_prefetch_request",
+        None,
+    )
+    if future is None or request is None or not future.done():
+        return
+
+    model.hierarchical_prefetch_future = None
+    model.hierarchical_prefetch_request = None
+    if future.cancelled():
+        return
+
+    controller = getattr(model, "high_level_controller", None)
+    if controller is None:
+        return
+    try:
+        prediction = future.result()
+    except Exception as exc:  # noqa: BLE001 - keep eval alive and expose error.
+        model.hierarchical_prefetch_error = str(exc)
+        return
+    finish_prefetch = getattr(controller, "finish_prefetch_next_request", None)
+    if finish_prefetch is not None:
+        finish_prefetch(
+            request,
+            prediction,
+            ready_timestamp_s=timestamp_s,
+        )
+
+
+def _maybe_start_prefetch_next_planner(
+    model: HyVLAPolicyWrapper,
+    *,
+    timestamp_s: float,
+    frame_id: int,
+) -> None:
+    controller = getattr(model, "high_level_controller", None)
+    executor: ThreadPoolExecutor | None = getattr(
+        model,
+        "hierarchical_prefetch_executor",
+        None,
+    )
+    if controller is None or executor is None:
+        return
+
+    _poll_prefetch_next_planner(model, timestamp_s=timestamp_s)
+    future: Future | None = getattr(model, "hierarchical_prefetch_future", None)
+    if future is not None and not future.done():
+        return
+
+    begin_prefetch = getattr(controller, "begin_prefetch_next_request", None)
+    if begin_prefetch is None:
+        return
+    request = begin_prefetch(timestamp_s=timestamp_s, frame_id=frame_id)
+    if request is None:
+        return
+
+    model.hierarchical_prefetch_request_id = int(
+        getattr(model, "hierarchical_prefetch_request_id", 0)
+    ) + 1
+    model.hierarchical_prefetch_request = request
+    model.hierarchical_prefetch_future = executor.submit(
+        _predict_high_level_request,
+        controller,
+        request,
+    )
+
+
+def _action_cache_len(model: HyVLAPolicyWrapper) -> int:
+    cache = getattr(model, "action_cache", None)
+    if cache is None:
+        return -1
+    try:
+        return int(len(cache))
+    except TypeError:
+        return -1
+
+
+def _publish_high_level_decision(
+    TASK_ENV,
+    model: HyVLAPolicyWrapper,
+    *,
+    original_instruction: str,
+    decision,
+    frame_id: int,
+    timestamp_s: float,
+    instruction_update_started_ns: int | None = None,
+    request_started_ns: int | None = None,
+) -> str:
+    update_started = instruction_update_started_ns or time.perf_counter_ns()
+    should_refresh_low_level = bool(
+        getattr(decision, "should_refresh_low_level", True)
+    )
+    action_cache_before = _action_cache_len(model)
+    if should_refresh_low_level:
+        next_instruction = _format_low_level_instruction(
+            original_instruction,
+            decision,
+            mode=getattr(model, "high_level_instruction_mode", "subtask"),
+        )
+        stale_action_count = model.invalidate_action_cache()
+    else:
+        next_instruction = (
+            getattr(model, "high_level_current_instruction", None)
+            or original_instruction
+        )
+        stale_action_count = 0
+    action_cache_after = _action_cache_len(model)
+    update_finished = time.perf_counter_ns()
+    decision.timing_ms["instruction_update_total"] = (
+        update_finished - update_started
+    ) / 1_000_000.0
+    decision.timing_ms["decision_to_instruction_ready"] = (
+        update_finished - update_started
+    ) / 1_000_000.0
+    if request_started_ns is not None:
+        request_to_ready_ms = (
+            update_finished - int(request_started_ns)
+        ) / 1_000_000.0
+        decision.timing_ms["request_to_decision_ready"] = request_to_ready_ms
+        decision.timing_ms["request_to_instruction_ready"] = request_to_ready_ms
+        if decision.trigger == "forced_boundary":
+            decision.timing_ms["boundary_to_decision_ready"] = request_to_ready_ms
+            decision.timing_ms["boundary_to_instruction_ready"] = request_to_ready_ms
+    if decision.trigger == "forced_boundary":
+        profile = getattr(model, "hierarchical_task_profile", None)
+        if profile is not None:
+            try:
+                decision.timing_ms["measurement_oracle_completed"] = (
+                    1.0 if bool(profile.first_subtask_complete(TASK_ENV)) else 0.0
+                )
+            except Exception as exc:  # noqa: BLE001 - log availability, keep eval alive.
+                decision.timing_ms["measurement_oracle_completed_available"] = 0.0
+                decision.timing_ms["measurement_oracle_error"] = float(
+                    len(str(exc))
+                )
+    decision.timing_ms["action_cache_len_before_high_level_commit"] = float(
+        action_cache_before
+    )
+    decision.timing_ms["action_cache_len_after_high_level_commit"] = float(
+        action_cache_after
+    )
+    decision.timing_ms["stale_action_cache_discarded"] = float(stale_action_count)
+    decision.timing_ms["action_cache_cleared"] = (
+        1.0 if should_refresh_low_level and stale_action_count > 0 else 0.0
+    )
+    decision.timing_ms["same_decision_kept_action_cache"] = (
+        1.0 if not should_refresh_low_level else 0.0
+    )
+    model.high_level_current_instruction = next_instruction
+    if should_refresh_low_level:
+        model.pending_instruction_handoff = {
+            "decision": decision,
+            "frame_id": frame_id,
+            "timestamp_s": timestamp_s,
+            "instruction_ready_ns": update_finished,
+        }
+    model.high_level_decisions.append(
+        {
+            "frame_id": frame_id,
+            "timestamp_s": timestamp_s,
+            **decision.to_dict(),
+        }
+    )
+    _append_high_level_log(model, frame_id, timestamp_s, decision)
+    if should_refresh_low_level:
+        model.hierarchical_handoff_fired = True
+        _maybe_start_prefetch_next_planner(
+            model,
+            timestamp_s=timestamp_s,
+            frame_id=frame_id,
+        )
+    return next_instruction
+
+
+def _poll_async_high_level_request(
+    TASK_ENV,
+    model: HyVLAPolicyWrapper,
+    *,
+    original_instruction: str,
+    frame_id: int,
+    timestamp_s: float,
+) -> None:
+    future: Future | None = getattr(model, "hierarchical_async_future", None)
+    request: HighLevelRequest | None = getattr(
+        model,
+        "hierarchical_async_request",
+        None,
+    )
+    if future is None or request is None or not future.done():
+        return
+
+    model.hierarchical_async_future = None
+    model.hierarchical_async_request = None
+    if future.cancelled():
+        return
+
+    prediction = future.result()
+    max_age_s = float(getattr(model, "hierarchical_async_drop_stale_s", 0.0))
+    response_age_s = max(0.0, float(timestamp_s) - float(request.timestamp_s))
+    if max_age_s > 0 and response_age_s > max_age_s:
+        return
+
+    controller = getattr(model, "high_level_controller", None)
+    if controller is None:
+        return
+    finalize_prediction = getattr(
+        controller,
+        "finalize_prediction_for_request",
+        None,
+    )
+    if finalize_prediction is not None:
+        prediction = finalize_prediction(request, prediction)
+    decision = controller.finish_step(
+        request,
+        prediction,
+        commit_timestamp_s=timestamp_s,
+        commit_frame_id=frame_id,
+    )
+    decision.timing_ms["async_response_age"] = response_age_s * 1000.0
+    decision.timing_ms["async_request_to_decision"] = (
+        time.perf_counter_ns() - int(request.request_started_ns)
+    ) / 1_000_000.0
+    _publish_high_level_decision(
+        TASK_ENV,
+        model,
+        original_instruction=original_instruction,
+        decision=decision,
+        frame_id=frame_id,
+        timestamp_s=timestamp_s,
+        request_started_ns=request.request_started_ns,
+    )
+
+
+def _maybe_start_async_high_level_request(
+    model: HyVLAPolicyWrapper,
+    *,
+    timestamp_s: float,
+    frame_id: int,
+) -> None:
+    controller = getattr(model, "high_level_controller", None)
+    executor: ThreadPoolExecutor | None = getattr(
+        model,
+        "hierarchical_async_executor",
+        None,
+    )
+    if controller is None or executor is None:
+        return
+    future: Future | None = getattr(model, "hierarchical_async_future", None)
+    if future is not None and not future.done():
+        return
+
+    request = controller.begin_step(timestamp_s=timestamp_s, frame_id=frame_id)
+    if request is None or request.initial:
+        return
+    model.hierarchical_async_request_id = int(
+        getattr(model, "hierarchical_async_request_id", 0)
+    ) + 1
+    model.hierarchical_async_request = request
+    model.hierarchical_async_future = executor.submit(
+        _predict_high_level_request,
+        controller,
+        request,
+    )
+
+
 def _resolve_instruction(
     TASK_ENV,
     model: HyVLAPolicyWrapper,
@@ -494,8 +917,16 @@ def _resolve_instruction(
     if controller is None:
         return original_instruction
 
+    should_update_now = bool(
+        getattr(controller, "should_update", lambda _timestamp_s: True)(
+            timestamp_s
+        )
+    )
+    force_decision_visual = bool(
+        getattr(model, "hierarchical_force_visual_on_decision", False)
+    ) and bool(should_update_now)
     camera_images: dict[str, Any] = {}
-    if controller.should_capture_visual(timestamp_s):
+    if controller.should_capture_visual(timestamp_s) or force_decision_visual:
         head_camera = observation["observation"]["head_camera"]["rgb"]
         # The slow controller starts with one camera at 1 FPS. This avoids
         # retaining 25 FPS multi-view frames while preserving real pixels
@@ -509,12 +940,44 @@ def _resolve_instruction(
         metadata={
             "task_instruction": original_instruction,
             "visual_capture": bool(camera_images),
+            "visual_capture_reason": (
+                "decision" if force_decision_visual else "periodic"
+            )
+            if camera_images
+            else "none",
             "has_head_camera": "head_camera" in observation.get("observation", {}),
             "has_left_camera": "left_camera" in observation.get("observation", {}),
             "has_right_camera": "right_camera" in observation.get("observation", {}),
         },
     )
     controller.observe(frame)
+    _poll_prefetch_next_planner(model, timestamp_s=timestamp_s)
+    if bool(getattr(model, "hierarchical_async_enabled", False)):
+        if model.high_level_current_instruction is None:
+            decision = controller.step(timestamp_s=timestamp_s, frame_id=frame_id)
+            if decision is not None:
+                _publish_high_level_decision(
+                    TASK_ENV,
+                    model,
+                    original_instruction=original_instruction,
+                    decision=decision,
+                    frame_id=frame_id,
+                    timestamp_s=timestamp_s,
+                )
+        _poll_async_high_level_request(
+            TASK_ENV,
+            model,
+            original_instruction=original_instruction,
+            frame_id=frame_id,
+            timestamp_s=timestamp_s,
+        )
+        _maybe_start_async_high_level_request(
+            model,
+            timestamp_s=timestamp_s,
+            frame_id=frame_id,
+        )
+        return model.high_level_current_instruction or original_instruction
+
     # The forced-boundary measurement starts after per-step observation
     # bookkeeping and ends once the refreshed instruction is published. It
     # deliberately excludes startup/model-loading/warm-up and the following
@@ -522,44 +985,15 @@ def _resolve_instruction(
     boundary_started = time.perf_counter_ns()
     decision = controller.step(timestamp_s=timestamp_s, frame_id=frame_id)
     if decision is not None:
-        handoff_started = time.perf_counter_ns()
-        next_instruction = _format_low_level_instruction(
-            original_instruction,
-            decision,
-            mode=getattr(model, "high_level_instruction_mode", "subtask"),
+        _publish_high_level_decision(
+            TASK_ENV,
+            model,
+            original_instruction=original_instruction,
+            decision=decision,
+            frame_id=frame_id,
+            timestamp_s=timestamp_s,
+            request_started_ns=boundary_started,
         )
-        stale_action_count = model.invalidate_action_cache()
-        handoff_finished = time.perf_counter_ns()
-        decision.timing_ms["instruction_update_total"] = (
-            handoff_finished - handoff_started
-        ) / 1_000_000.0
-        # The controller decision has already been computed at this point.
-        # This field measures only publication of the text command and cache
-        # invalidation; `total` / `backend_online_total` measure planning.
-        decision.timing_ms["decision_to_instruction_ready"] = (
-            handoff_finished - handoff_started
-        ) / 1_000_000.0
-        if decision.trigger == "forced_boundary":
-            decision.timing_ms["boundary_to_instruction_ready"] = (
-                handoff_finished - boundary_started
-            ) / 1_000_000.0
-        decision.timing_ms["stale_action_cache_discarded"] = float(stale_action_count)
-        model.high_level_current_instruction = next_instruction
-        model.pending_instruction_handoff = {
-            "decision": decision,
-            "frame_id": frame_id,
-            "timestamp_s": timestamp_s,
-            "instruction_ready_ns": handoff_finished,
-        }
-        model.high_level_decisions.append(
-            {
-                "frame_id": frame_id,
-                "timestamp_s": timestamp_s,
-                **decision.to_dict(),
-            }
-        )
-        _append_high_level_log(model, frame_id, timestamp_s, decision)
-        model.hierarchical_handoff_fired = True
 
     return model.high_level_current_instruction or original_instruction
 
@@ -577,7 +1011,7 @@ def _format_low_level_instruction(
         return (
             f"{original_instruction}\n"
             f"Current subtask: {decision.next_subtask}\n"
-            f"Memory: phase={decision.phase_index}; keyframes={decision.memory_keyframes}"
+            f"High-level phase: {decision.phase_index}"
         )
     if normalized_mode == "memory_only":
         return decision.memory_text

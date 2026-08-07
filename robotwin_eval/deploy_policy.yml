@@ -43,11 +43,25 @@ umi_gripper_space: False
 # next subtask. This is not a completion detector.
 hierarchical_enabled: False
 hierarchical_instruction_mode: subtask  # subtask | augmented | memory_only | original
+hierarchical_prompt_mode: legacy  # legacy | minimal | minimal_status | completion_status
+# `inline_vlm` keeps the legacy behavior where the VLM directly emits the
+# next subtask. `vlm_plan_all` asks the high-level model to generate the full
+# subtask list at episode start. `vlm_plan_next` asks the high-level model for
+# one next subtask only when a verified switch is needed. `profile_all` and
+# `lazy_profile` are deterministic debug fallbacks using the task profile.
+hierarchical_planner_mode: inline_vlm  # inline_vlm | vlm_plan_all | vlm_plan_next | profile_all | lazy_profile
 # `forced_boundary` is a timing control. `task_oracle` disables the timer
 # and triggers after the selected task profile's first-subtask oracle is stable.
 # `burger_oracle` remains accepted as a legacy alias for place_burger_fries.
 hierarchical_handoff_trigger: forced_boundary  # forced_boundary | task_oracle
 hierarchical_oracle_stability_steps: 3
+hierarchical_async_enabled: False
+# When async is enabled, a completed high-level response older than this many
+# simulated seconds is dropped. Zero disables stale-response dropping.
+hierarchical_async_drop_stale_s: 0.0
+# Capture the current camera frame whenever a high-level decision is due,
+# instead of relying only on the 1Hz history buffer.
+hierarchical_force_visual_on_decision: False
 # Calibration-only: end the current evaluation episode after recording the
 # stable task-oracle handoff. This does not mark the full task as successful.
 hierarchical_stop_after_oracle_handoff: False
@@ -63,16 +77,16 @@ hierarchical_history_fps: 1.0
 hierarchical_source_fps: 25.0
 hierarchical_recent_frames_length: 8
 hierarchical_memory_length: 8
-hierarchical_keyframe_merge_distance: 5
 hierarchical_max_memory_frames: 256
 hierarchical_log_path: null
 
 # `scripted` is the stable timing/plumbing baseline. `shared_hunyuan_vlm`
 # reuses the low-level action model's VLM tower, but it is not a reliable
 # instruction-following planner. `qwen25_vl` loads a Qwen2.5-VL checkpoint
-# directly. `qwen36_vllm_mtp` calls a separate Qwen3.6 vLLM service, which
-# enables native MTP decoding without changing the low-level runtime.
-hierarchical_backend: scripted  # scripted | shared_hunyuan_vlm | qwen25_vl | qwen36_vllm_mtp
+# directly. `qwen35_vllm_mtp` and `qwen36_vllm_mtp` call separate vLLM
+# services, enabling native Qwen MTP decoding without changing the low-level
+# runtime.
+hierarchical_backend: scripted  # scripted | shared_hunyuan_vlm | qwen25_vl | qwen35_vllm_mtp | qwen36_vllm_mtp | gemma4_vllm
 hierarchical_vlm_camera: head_camera
 hierarchical_vlm_max_images: 8
 hierarchical_vlm_max_new_tokens: 160
@@ -85,5 +99,22 @@ hierarchical_qwen36_server_url: null
 hierarchical_qwen36_model_name: qwen3.6-27b-mtp
 hierarchical_qwen36_request_timeout_s: 120.0
 hierarchical_qwen36_jpeg_quality: 90
-hierarchical_qwen36_image_selection: tail  # tail | all | recent_tail | uniform | latest
+hierarchical_qwen36_image_selection: tail  # tail | all | recent_tail | uniform | latest | first_latest | diverse
 hierarchical_qwen36_image_max_side: 0  # 0 keeps the original frame size before JPEG encoding
+hierarchical_qwen36_output_schema: legacy  # legacy | minimal | minimal_status | completion_status
+hierarchical_qwen36_mtp_speculative_tokens: 1
+hierarchical_qwen35_server_url: null
+hierarchical_qwen35_model_name: qwen3.5-9b-mtp
+hierarchical_qwen35_request_timeout_s: 120.0
+hierarchical_qwen35_jpeg_quality: 90
+hierarchical_qwen35_image_selection: latest  # tail | all | recent_tail | uniform | latest | first_latest | diverse
+hierarchical_qwen35_image_max_side: 0  # 0 keeps the original frame size before JPEG encoding
+hierarchical_qwen35_output_schema: minimal_status  # legacy | minimal | minimal_status | completion_status
+hierarchical_qwen35_mtp_speculative_tokens: 2
+hierarchical_gemma4_server_url: http://127.0.0.1:8002
+hierarchical_gemma4_model_name: gemma-4-12B-it
+hierarchical_gemma4_request_timeout_s: 120.0
+hierarchical_gemma4_jpeg_quality: 90
+hierarchical_gemma4_image_selection: latest  # tail | all | recent_tail | uniform | latest | first_latest | diverse
+hierarchical_gemma4_image_max_side: 0  # 0 keeps the original frame size before JPEG encoding
+hierarchical_gemma4_output_schema: minimal_status  # legacy | minimal | minimal_status | completion_status

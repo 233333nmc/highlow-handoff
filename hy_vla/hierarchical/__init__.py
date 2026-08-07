@@ -2,7 +2,6 @@
 
 from .burger_fries import (
     BurgerFriesHighLevelController,
-    EpisodicKeyframeMemory,
     ExecutionReport,
     FixedLatencyBackend,
     FrameBuffer,
@@ -10,12 +9,13 @@ from .burger_fries import (
     HighLevelBackend,
     HighLevelDecision,
     HighLevelPrediction,
+    HighLevelRequest,
     JsonTextHighLevelBackend,
-    KeyframeFilter,
     ScriptedBurgerFriesBackend,
     parse_high_level_prediction_text,
 )
 from .hunyuan_backend import SharedHunyuanVlmBackend
+from .gemma4_vllm_backend import Gemma4VllmBackend
 from .qwen25_backend import Qwen25VlmBackend
 from .qwen36_vllm_backend import Qwen36VllmBackend
 from .robotwin_task_profiles import (
@@ -26,7 +26,6 @@ from .robotwin_task_profiles import (
 
 __all__ = [
     "BurgerFriesHighLevelController",
-    "EpisodicKeyframeMemory",
     "ExecutionReport",
     "FixedLatencyBackend",
     "FrameBuffer",
@@ -34,10 +33,11 @@ __all__ = [
     "HighLevelBackend",
     "HighLevelDecision",
     "HighLevelPrediction",
+    "HighLevelRequest",
     "JsonTextHighLevelBackend",
-    "KeyframeFilter",
     "ScriptedBurgerFriesBackend",
     "SharedHunyuanVlmBackend",
+    "Gemma4VllmBackend",
     "Qwen25VlmBackend",
     "Qwen36VllmBackend",
     "RoboTwinTaskProfile",

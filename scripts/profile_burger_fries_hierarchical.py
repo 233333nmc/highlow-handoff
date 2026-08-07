@@ -26,7 +26,6 @@ def simulate(controller: BurgerFriesHighLevelController, total_seconds: float, f
             frame_id=frame_id,
             timestamp_s=timestamp_s,
             caption=f"dummy frame {frame_id}",
-            is_keyframe=(frame_id % refresh_stride == 0),
             metadata={"simulated": True},
         )
         controller.observe(frame)

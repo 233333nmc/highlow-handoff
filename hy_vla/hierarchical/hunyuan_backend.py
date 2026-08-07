@@ -105,8 +105,10 @@ class SharedHunyuanVlmBackend:
         phase_index: int,
         phase_prompt: str,
         execution_report: ExecutionReport | None,
+        output_schema: str | None = None,
+        allow_text_only: bool = False,
     ) -> HighLevelPrediction:
-        del timestamp_s, phase_index, execution_report
+        del timestamp_s, phase_index, execution_report, output_schema, allow_text_only
         images, image_frame_ids = self._select_images(
             memory_frames=memory_frames,
             recent_frames=recent_frames,
@@ -125,8 +127,7 @@ class SharedHunyuanVlmBackend:
 
         response_schema = (
             "\nReturn exactly one JSON object with these fields:\n"
-            '{"current_subtask": string, "keyframe_positions": [int], '
-            '"confidence": float}\n'
+            '{"current_subtask": string, "confidence": float}\n'
             "Use only evidence supported by the supplied images. "
             "This is a forced-boundary baseline: do not claim that the "
             "previous subtask succeeded merely because its time budget ended."
