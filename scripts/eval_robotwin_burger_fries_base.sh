@@ -16,21 +16,40 @@ INSTRUCTION_TYPE=${INSTRUCTION_TYPE:-unseen}
 SEED=${SEED:-10000}
 LOG_DIR=${LOG_DIR:-"${WORK_ROOT}/profile_results/robotwin_burger_fries"}
 LOG_PATH=${LOG_PATH:-"${LOG_DIR}/base.log"}
+RUNTIME_CACHE_ROOT=${RUNTIME_CACHE_ROOT:-"${WORK_ROOT}/runtime_cache/robotwin_base"}
 
-mkdir -p "${LOG_DIR}" "${WORK_ROOT}/.cache/tmp" "${WORK_ROOT}/.cache/matplotlib" "${WORK_ROOT}/.cache/xdg" "${WORK_ROOT}/model_cache/huggingface"
+mkdir -p \
+  "${LOG_DIR}" \
+  "${RUNTIME_CACHE_ROOT}/scratch" \
+  "${RUNTIME_CACHE_ROOT}/matplotlib" \
+  "${RUNTIME_CACHE_ROOT}/xdg" \
+  "${WORK_ROOT}/model_cache/huggingface"
 ln -sfn "${HY_VLA_DIR}/robotwin_eval" "${ROBOTWIN_DIR}/policy/hy_vla"
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
 
-export TMPDIR="${WORK_ROOT}/.cache/tmp"
-export MPLCONFIGDIR="${WORK_ROOT}/.cache/matplotlib"
-export XDG_CACHE_HOME="${WORK_ROOT}/.cache/xdg"
+export TMPDIR="${RUNTIME_CACHE_ROOT}/scratch"
+export MPLCONFIGDIR="${RUNTIME_CACHE_ROOT}/matplotlib"
+export XDG_CACHE_HOME="${RUNTIME_CACHE_ROOT}/xdg"
 export HF_HOME="${WORK_ROOT}/model_cache/huggingface"
 export HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET:-1}
 export HF_HUB_ETAG_TIMEOUT=${HF_HUB_ETAG_TIMEOUT:-30}
 export HF_HUB_DOWNLOAD_TIMEOUT=${HF_HUB_DOWNLOAD_TIMEOUT:-600}
 export PYTHONPATH="${HY_VLA_DIR}:${PYTHONPATH:-}"
 export XLA_PYTHON_CLIENT_MEM_FRACTION=${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.4}
+
+# Some containers expose NVIDIA's EGL library but omit
+# /etc/glvnd/egl_vendor.d. SAPIEN otherwise raises while importing. Use the
+# SAPIEN-packaged vendor manifest when the platform has not already provided
+# one. This does not change CUDA device visibility.
+if [[ -z "${__EGL_VENDOR_LIBRARY_FILENAMES:-}" && -z "${__EGL_VENDOR_LIBRARY_DIRS:-}" ]]; then
+  SAPIEN_PACKAGE_DIR="$("${PYTHON}" -c \
+    'import importlib.util; print(next(iter(importlib.util.find_spec("sapien").submodule_search_locations)))')"
+  SAPIEN_EGL_ICD="${SAPIEN_PACKAGE_DIR}/vulkan_library/10_nvidia.json"
+  if [[ -f "${SAPIEN_EGL_ICD}" ]]; then
+    export __EGL_VENDOR_LIBRARY_FILENAMES="${SAPIEN_EGL_ICD}"
+  fi
+fi
 
 echo "RoboTwin task       : place_burger_fries"
 echo "Mode               : base Hy-VLA"

@@ -110,12 +110,31 @@ def encode_obs(observation: dict[str, Any], instruction: str) -> dict[str, Any]:
     }
 
 
+def _hold_action_from_observation(observation: dict[str, Any]) -> np.ndarray:
+    return np.array(
+        [
+            *observation["endpose"]["left_endpose"],
+            observation["endpose"]["left_gripper"],
+            *observation["endpose"]["right_endpose"],
+            observation["endpose"]["right_gripper"],
+        ],
+        dtype=np.float32,
+    )
+
+
 # ---------------------------------------------------------------------------
 # RoboTwin hooks
 # ---------------------------------------------------------------------------
 def get_model(usr_args: dict[str, Any]) -> HyVLAPolicyWrapper:
     """Factory called once per evaluation run by RoboTwin."""
     model = build_policy(usr_args)
+    override = usr_args.get("low_level_instruction_override")
+    model.low_level_instruction_override = None if override is None else str(override)
+    trace_path = usr_args.get("low_level_instruction_trace_path")
+    model.low_level_instruction_trace_path = Path(trace_path) if trace_path else None
+    model.low_level_instruction_trace_every_step = _as_bool(
+        usr_args.get("low_level_instruction_trace_every_step", False)
+    )
     _maybe_attach_hierarchical_controller(model, usr_args)
     return model
 
@@ -152,6 +171,35 @@ def eval(TASK_ENV, model: HyVLAPolicyWrapper, observation: dict[str, Any]) -> No
     )
     batch = encode_obs(observation, instruction)
     state = batch["observation.state"][0, :16].copy()
+    pause_remaining = int(
+        getattr(model, "hierarchical_handoff_pause_remaining_steps", 0)
+    )
+    if pause_remaining > 0:
+        action = _hold_action_from_observation(observation)
+        model.hierarchical_handoff_pause_remaining_steps = pause_remaining - 1
+        model.last_action_used_cache = False
+        model.last_model_forward_ms = 0.0
+        model.last_action_call_ms = 0.0
+        model.last_action_chunk_wxyz = None
+        _append_low_level_instruction_trace(
+            model,
+            TASK_ENV,
+            frame_id=frame_id,
+            timestamp_s=timestamp_s,
+            instruction=instruction,
+            action=action,
+            pause_step=True,
+            pause_remaining_steps=pause_remaining,
+        )
+        TASK_ENV.take_action(action, action_type="ee")
+        _maybe_trigger_oracle_handoff(
+            TASK_ENV,
+            model,
+            frame_id=frame_id,
+            timestamp_s=timestamp_s,
+        )
+        return
+
     action_started = time.perf_counter()
     action = model.get_action(batch)
     action_finished = time.perf_counter()
@@ -183,7 +231,16 @@ def eval(TASK_ENV, model: HyVLAPolicyWrapper, observation: dict[str, Any]) -> No
             low_level_call_ms=(action_finished - action_started) * 1000.0,
             model_forward_ms=float(getattr(model, "last_model_forward_ms", 0.0)),
             used_action_cache=bool(getattr(model, "last_action_used_cache", False)),
+            instruction=instruction,
         )
+    _append_low_level_instruction_trace(
+        model,
+        TASK_ENV,
+        frame_id=frame_id,
+        timestamp_s=timestamp_s,
+        instruction=instruction,
+        action=action,
+    )
     TASK_ENV.take_action(action, action_type="ee")
     _maybe_trigger_oracle_handoff(
         TASK_ENV,
@@ -216,9 +273,11 @@ def reset_model(model: HyVLAPolicyWrapper) -> str:
         model.hierarchical_prefetch_future = None
         model.hierarchical_prefetch_request = None
         model.hierarchical_oracle_streak = 0
+        model.hierarchical_oracle_phase_index = -1
         model.hierarchical_oracle_handoff_fired = False
         model.hierarchical_handoff_fired = False
         model.hierarchical_first_action_after_handoff_logged = False
+        model.hierarchical_handoff_pause_remaining_steps = 0
     return message
 
 
@@ -228,6 +287,27 @@ def _as_bool(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _parse_phase_prompts_json(
+    value: Any,
+    *,
+    fallback: tuple[str, ...],
+) -> tuple[str, ...]:
+    if value is None or str(value).strip() == "":
+        return fallback
+    text = str(value)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        if "|||" in text:
+            return tuple(text.split("|||"))
+        raise
+    if not isinstance(parsed, list) or not parsed:
+        raise ValueError("hierarchical_phase_prompts_json must be a non-empty JSON list")
+    if not all(isinstance(item, str) for item in parsed):
+        raise ValueError("hierarchical_phase_prompts_json entries must be strings")
+    return tuple(parsed)
 
 
 def _maybe_attach_hierarchical_controller(
@@ -427,6 +507,15 @@ def _maybe_attach_hierarchical_controller(
             f"'task_oracle', or legacy 'burger_oracle', got {handoff_trigger!r}"
         )
 
+    phase_prompts = _parse_phase_prompts_json(
+        usr_args.get("hierarchical_phase_prompts_json"),
+        fallback=profile.phase_prompts,
+    )
+    phase_names = (
+        profile.phase_names
+        if len(phase_prompts) == len(profile.phase_names)
+        else tuple(f"phase {idx}" for idx in range(len(phase_prompts)))
+    )
     controller = BurgerFriesHighLevelController(
         task_instruction=str(
             usr_args.get(
@@ -435,8 +524,8 @@ def _maybe_attach_hierarchical_controller(
             )
         ),
         task_name=profile.task_name,
-        phase_names=profile.phase_names,
-        phase_prompts=profile.phase_prompts,
+        phase_names=phase_names,
+        phase_prompts=phase_prompts,
         forced_boundary_s=float(
             usr_args.get(
                 "hierarchical_forced_boundary_s",
@@ -456,6 +545,9 @@ def _maybe_attach_hierarchical_controller(
         planner_mode=str(usr_args.get("hierarchical_planner_mode", "inline_vlm")),
         visual_context_mode=str(
             usr_args.get("hierarchical_visual_context_mode", "recent")
+        ),
+        include_phase_profile_hints=_as_bool(
+            usr_args.get("hierarchical_include_phase_profile_hints", True)
         ),
         backend=backend,
     )
@@ -504,9 +596,15 @@ def _maybe_attach_hierarchical_controller(
         int(usr_args.get("hierarchical_oracle_stability_steps", 3)),
     )
     model.hierarchical_oracle_streak = 0
+    model.hierarchical_oracle_phase_index = -1
     model.hierarchical_oracle_handoff_fired = False
     model.hierarchical_handoff_fired = False
     model.hierarchical_first_action_after_handoff_logged = False
+    model.hierarchical_handoff_pause_steps = max(
+        0,
+        int(usr_args.get("hierarchical_handoff_pause_steps", 0)),
+    )
+    model.hierarchical_handoff_pause_remaining_steps = 0
     # Calibration can stop immediately after an oracle timestamp is captured.
     # It does not mark the episode as successful and is not used for the
     # full forced-boundary latency evaluation.
@@ -532,14 +630,12 @@ def _maybe_trigger_oracle_handoff(
     frame_id: int,
     timestamp_s: float,
 ) -> None:
-    """Trigger one high-level handoff after a profile-specific simulator event."""
+    """Trigger high-level handoffs after profile-specific simulator events."""
 
     controller = getattr(model, "high_level_controller", None)
     if controller is None:
         return
     if getattr(model, "hierarchical_handoff_trigger", "") != "task_oracle":
-        return
-    if bool(getattr(model, "hierarchical_oracle_handoff_fired", False)):
         return
     if bool(getattr(TASK_ENV, "eval_success", False)):
         return
@@ -547,7 +643,28 @@ def _maybe_trigger_oracle_handoff(
     profile = getattr(model, "hierarchical_task_profile", None)
     if profile is None:
         return
-    if not profile.first_subtask_complete(TASK_ENV):
+
+    active_phase_index = int(getattr(controller, "_active_phase_index", 0))
+    phase_count = len(getattr(controller, "phase_prompts", ()) or ())
+    if phase_count <= 0 or active_phase_index >= phase_count - 1:
+        return
+    if int(getattr(model, "hierarchical_oracle_phase_index", -1)) != active_phase_index:
+        model.hierarchical_oracle_phase_index = active_phase_index
+        model.hierarchical_oracle_streak = 0
+
+    phase_complete_fn = getattr(profile, "is_phase_complete", None)
+    try:
+        phase_complete = (
+            bool(phase_complete_fn(TASK_ENV, active_phase_index))
+            if callable(phase_complete_fn)
+            else (
+                active_phase_index == 0
+                and bool(profile.first_subtask_complete(TASK_ENV))
+            )
+        )
+    except Exception:  # noqa: BLE001 - instrumentation must not fail eval.
+        phase_complete = False
+    if not phase_complete:
         model.hierarchical_oracle_streak = 0
         return
 
@@ -570,7 +687,10 @@ def _maybe_trigger_oracle_handoff(
     decision = controller.trigger_handoff(
         timestamp_s=event_timestamp_s,
         frame_id=event_frame_id,
-        trigger=f"simulator_oracle_{profile.task_name}_first_subtask_completed",
+        trigger=(
+            f"simulator_oracle_{profile.task_name}_phase_"
+            f"{active_phase_index}_completed"
+        ),
         report_status="completed",
     )
     handoff_finished = time.perf_counter_ns()
@@ -583,6 +703,8 @@ def _maybe_trigger_oracle_handoff(
     decision.timing_ms["oracle_stability_steps"] = float(
         getattr(model, "hierarchical_oracle_stability_steps", 3)
     )
+    decision.timing_ms["oracle_completed_phase_index"] = float(active_phase_index)
+    decision.timing_ms["oracle_next_phase_index"] = float(decision.phase_index)
     instruction_update_started = time.perf_counter_ns()
     action_cache_before = _action_cache_len(model)
     model.high_level_current_instruction = _format_low_level_instruction(
@@ -616,6 +738,7 @@ def _maybe_trigger_oracle_handoff(
         "timestamp_s": event_timestamp_s,
         "instruction_ready_ns": instruction_update_finished,
     }
+    _arm_handoff_pause(model, decision)
     model.high_level_decisions.append(
         {
             "frame_id": event_frame_id,
@@ -624,8 +747,18 @@ def _maybe_trigger_oracle_handoff(
         }
     )
     _append_high_level_log(model, event_frame_id, event_timestamp_s, decision)
-    model.hierarchical_oracle_handoff_fired = True
+    model.hierarchical_oracle_streak = 0
+    model.hierarchical_oracle_phase_index = int(decision.phase_index)
+    model.hierarchical_oracle_handoff_fired = int(decision.phase_index) >= (
+        phase_count - 1
+    )
     model.hierarchical_handoff_fired = True
+    if int(decision.phase_index) < phase_count - 1:
+        _maybe_start_prefetch_next_planner(
+            model,
+            timestamp_s=event_timestamp_s,
+            frame_id=event_frame_id,
+        )
 
 
 def _predict_high_level_request(controller, request: HighLevelRequest):
@@ -716,6 +849,16 @@ def _action_cache_len(model: HyVLAPolicyWrapper) -> int:
         return -1
 
 
+def _arm_handoff_pause(model: HyVLAPolicyWrapper, decision) -> None:
+    if getattr(decision, "trigger", "") == "initial":
+        return
+    steps = int(getattr(model, "hierarchical_handoff_pause_steps", 0))
+    if steps <= 0:
+        return
+    model.hierarchical_handoff_pause_remaining_steps = steps
+    decision.timing_ms["handoff_pause_steps"] = float(steps)
+
+
 def _publish_high_level_decision(
     TASK_ENV,
     model: HyVLAPolicyWrapper,
@@ -740,9 +883,9 @@ def _publish_high_level_decision(
         )
         stale_action_count = model.invalidate_action_cache()
     else:
-        next_instruction = (
-            getattr(model, "high_level_current_instruction", None)
-            or original_instruction
+        next_instruction = _current_high_level_instruction(
+            model,
+            original_instruction,
         )
         stale_action_count = 0
     action_cache_after = _action_cache_len(model)
@@ -795,6 +938,7 @@ def _publish_high_level_decision(
             "timestamp_s": timestamp_s,
             "instruction_ready_ns": update_finished,
         }
+        _arm_handoff_pause(model, decision)
     model.high_level_decisions.append(
         {
             "frame_id": frame_id,
@@ -915,7 +1059,7 @@ def _resolve_instruction(
     original_instruction = TASK_ENV.get_instruction()
     controller = getattr(model, "high_level_controller", None)
     if controller is None:
-        return original_instruction
+        return _apply_low_level_instruction_override(model, original_instruction)
 
     should_update_now = bool(
         getattr(controller, "should_update", lambda _timestamp_s: True)(
@@ -976,7 +1120,10 @@ def _resolve_instruction(
             timestamp_s=timestamp_s,
             frame_id=frame_id,
         )
-        return model.high_level_current_instruction or original_instruction
+        return _apply_low_level_instruction_override(
+            model,
+            _current_high_level_instruction(model, original_instruction),
+        )
 
     # The forced-boundary measurement starts after per-step observation
     # bookkeeping and ends once the refreshed instruction is published. It
@@ -995,7 +1142,30 @@ def _resolve_instruction(
             request_started_ns=boundary_started,
         )
 
-    return model.high_level_current_instruction or original_instruction
+    return _apply_low_level_instruction_override(
+        model,
+        _current_high_level_instruction(model, original_instruction),
+    )
+
+
+def _current_high_level_instruction(
+    model: HyVLAPolicyWrapper,
+    original_instruction: str,
+) -> str:
+    current_instruction = getattr(model, "high_level_current_instruction", None)
+    if current_instruction is None:
+        return original_instruction
+    return str(current_instruction)
+
+
+def _apply_low_level_instruction_override(
+    model: HyVLAPolicyWrapper,
+    instruction: str,
+) -> str:
+    override = getattr(model, "low_level_instruction_override", None)
+    if override is None:
+        return instruction
+    return str(override)
 
 
 def _format_low_level_instruction(
@@ -1036,6 +1206,62 @@ def _append_high_level_log(
     }
     with log_path.open("a", encoding="utf-8") as fp:
         fp.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _append_low_level_instruction_trace(
+    model: HyVLAPolicyWrapper,
+    TASK_ENV,
+    *,
+    frame_id: int,
+    timestamp_s: float,
+    instruction: str,
+    action: np.ndarray,
+    pause_step: bool = False,
+    pause_remaining_steps: int = 0,
+) -> None:
+    trace_path = getattr(model, "low_level_instruction_trace_path", None)
+    if trace_path is None:
+        return
+    used_cache = bool(getattr(model, "last_action_used_cache", False))
+    if used_cache and not bool(
+        getattr(model, "low_level_instruction_trace_every_step", False)
+    ):
+        return
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "frame_id": int(frame_id),
+        "timestamp_s": float(timestamp_s),
+        "episode_index": int(getattr(TASK_ENV, "test_num", 0)),
+        "original_instruction": TASK_ENV.get_instruction(),
+        "low_level_instruction": instruction,
+        "low_level_instruction_override": getattr(
+            model,
+            "low_level_instruction_override",
+            None,
+        ),
+        "used_action_cache": used_cache,
+        "model_forward_ms": float(getattr(model, "last_model_forward_ms", 0.0)),
+        "action_call_ms": float(getattr(model, "last_action_call_ms", 0.0)),
+        "action_cache_len_after_step": _action_cache_len(model),
+        "handoff_pause_step": bool(pause_step),
+        "handoff_pause_remaining_steps": int(pause_remaining_steps),
+        "executed_action_wxyz": _json_array(action),
+        "high_level_current_instruction": getattr(
+            model,
+            "high_level_current_instruction",
+            None,
+        ),
+    }
+    action_chunk = getattr(model, "last_action_chunk_wxyz", None)
+    if action_chunk is not None:
+        row["model_forward_action_chunk_wxyz"] = _json_array(action_chunk)
+    with trace_path.open("a", encoding="utf-8") as fp:
+        fp.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _json_array(value) -> list:
+    arr = np.asarray(value, dtype=np.float32)
+    return np.round(arr, 6).tolist()
 
 
 __all__ = ["encode_obs", "get_model", "eval", "reset_model"]

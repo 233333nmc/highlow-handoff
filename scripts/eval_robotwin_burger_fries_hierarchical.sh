@@ -18,12 +18,15 @@ TASK_NAME=${TASK_NAME:-place_burger_fries}
 LOG_DIR=${LOG_DIR:-"${WORK_ROOT}/profile_results/robotwin_${TASK_NAME}"}
 LOG_PATH=${LOG_PATH:-"${LOG_DIR}/hierarchical.log"}
 HL_LOG_PATH=${HL_LOG_PATH:-"${LOG_DIR}/hierarchical_decisions.jsonl"}
+LOW_LEVEL_TRACE_PATH=${LOW_LEVEL_TRACE_PATH:-"${LOG_DIR}/low_level_instruction_trace.jsonl"}
+LOW_LEVEL_TRACE_EVERY_STEP=${LOW_LEVEL_TRACE_EVERY_STEP:-False}
 RUNTIME_CACHE_ROOT=${RUNTIME_CACHE_ROOT:-"${WORK_ROOT}/runtime_cache/robotwin_eval"}
 ROBOTWIN_EVAL_RESULT_ROOT=${ROBOTWIN_EVAL_RESULT_ROOT:-"${ROBOTWIN_DIR}/eval_result"}
 FORCED_BOUNDARY_S=${FORCED_BOUNDARY_S:-5.0}
 MAX_FORCED_BOUNDARIES=${MAX_FORCED_BOUNDARIES:-1}
 HANDOFF_TRIGGER=${HANDOFF_TRIGGER:-forced_boundary}
 ORACLE_STABILITY_STEPS=${ORACLE_STABILITY_STEPS:-3}
+HANDOFF_PAUSE_STEPS=${HANDOFF_PAUSE_STEPS:-0}
 STOP_AFTER_ORACLE_HANDOFF=${STOP_AFTER_ORACLE_HANDOFF:-False}
 CALIBRATION_MAX_SIM_TIME_S=${CALIBRATION_MAX_SIM_TIME_S:-0.0}
 STOP_AFTER_MEASUREMENT_HANDOFF=${STOP_AFTER_MEASUREMENT_HANDOFF:-False}
@@ -31,6 +34,8 @@ INSTRUCTION_MODE=${INSTRUCTION_MODE:-subtask}
 HL_BACKEND=${HL_BACKEND:-scripted}
 HL_PROMPT_MODE=${HL_PROMPT_MODE:-legacy}
 HL_PLANNER_MODE=${HL_PLANNER_MODE:-inline_vlm}
+HL_PHASE_PROMPTS_JSON=${HL_PHASE_PROMPTS_JSON:-}
+HL_INCLUDE_PHASE_PROFILE_HINTS=${HL_INCLUDE_PHASE_PROFILE_HINTS:-True}
 HL_ASYNC_ENABLED=${HL_ASYNC_ENABLED:-False}
 HL_ASYNC_DROP_STALE_S=${HL_ASYNC_DROP_STALE_S:-0.0}
 HL_FORCE_VISUAL_ON_DECISION=${HL_FORCE_VISUAL_ON_DECISION:-False}
@@ -109,6 +114,7 @@ echo "RoboTwin dir       : ${ROBOTWIN_DIR}"
 echo "Python             : ${PYTHON}"
 echo "Eval log           : ${LOG_PATH}"
 echo "High-level log     : ${HL_LOG_PATH}"
+echo "Low-level trace    : ${LOW_LEVEL_TRACE_PATH}"
 if [[ "${HANDOFF_TRIGGER}" == "forced_boundary" ]]; then
   echo "Forced boundary    : ${FORCED_BOUNDARY_S}s"
 else
@@ -117,6 +123,7 @@ fi
 echo "Max handoffs       : ${MAX_FORCED_BOUNDARIES}"
 echo "Handoff trigger    : ${HANDOFF_TRIGGER}"
 echo "Oracle stability   : ${ORACLE_STABILITY_STEPS} steps"
+echo "Handoff pause      : ${HANDOFF_PAUSE_STEPS} sim steps"
 echo "Stop after oracle  : ${STOP_AFTER_ORACLE_HANDOFF}"
 echo "Calibration limit  : ${CALIBRATION_MAX_SIM_TIME_S}s"
 echo "Stop after measure : ${STOP_AFTER_MEASUREMENT_HANDOFF}"
@@ -124,6 +131,10 @@ echo "Instruction mode   : ${INSTRUCTION_MODE}"
 echo "High-level backend : ${HL_BACKEND}"
 echo "Prompt mode        : ${HL_PROMPT_MODE}"
 echo "Planner mode       : ${HL_PLANNER_MODE}"
+echo "Profile hints      : ${HL_INCLUDE_PHASE_PROFILE_HINTS}"
+if [[ -n "${HL_PHASE_PROMPTS_JSON}" ]]; then
+  echo "Phase prompts JSON : ${HL_PHASE_PROMPTS_JSON}"
+fi
 echo "Async high-level   : ${HL_ASYNC_ENABLED}, drop_stale=${HL_ASYNC_DROP_STALE_S}s"
 echo "Force decision img : ${HL_FORCE_VISUAL_ON_DECISION}"
 echo "Visual context     : ${HL_VISUAL_CONTEXT_MODE}"
@@ -169,11 +180,14 @@ fi
       --hierarchical_handoff_trigger "${HANDOFF_TRIGGER}" \
       --hierarchical_prompt_mode "${HL_PROMPT_MODE}" \
       --hierarchical_planner_mode "${HL_PLANNER_MODE}" \
+      --hierarchical_phase_prompts_json "${HL_PHASE_PROMPTS_JSON}" \
+      --hierarchical_include_phase_profile_hints "${HL_INCLUDE_PHASE_PROFILE_HINTS}" \
       --hierarchical_async_enabled "${HL_ASYNC_ENABLED}" \
       --hierarchical_async_drop_stale_s "${HL_ASYNC_DROP_STALE_S}" \
       --hierarchical_force_visual_on_decision "${HL_FORCE_VISUAL_ON_DECISION}" \
       --hierarchical_visual_context_mode "${HL_VISUAL_CONTEXT_MODE}" \
       --hierarchical_oracle_stability_steps "${ORACLE_STABILITY_STEPS}" \
+      --hierarchical_handoff_pause_steps "${HANDOFF_PAUSE_STEPS}" \
       --hierarchical_stop_after_oracle_handoff "${STOP_AFTER_ORACLE_HANDOFF}" \
       --hierarchical_calibration_max_sim_time_s "${CALIBRATION_MAX_SIM_TIME_S}" \
       --hierarchical_stop_after_measurement_handoff "${STOP_AFTER_MEASUREMENT_HANDOFF}" \
@@ -215,5 +229,7 @@ fi
       --hierarchical_recent_frames_length "${HL_RECENT_FRAMES_LENGTH}" \
       --hierarchical_memory_length 8 \
       --hierarchical_log_path "${HL_LOG_PATH}" \
+      --low_level_instruction_trace_path "${LOW_LEVEL_TRACE_PATH}" \
+      --low_level_instruction_trace_every_step "${LOW_LEVEL_TRACE_EVERY_STEP}" \
   2>&1 | sed -u 's/\r/\n/g' | sed -u '/step: /d'
 ) | tee "${LOG_PATH}"

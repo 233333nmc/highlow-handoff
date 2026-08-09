@@ -188,6 +188,7 @@ class HyVLAPolicyWrapper:
         self.last_action_used_cache = False
         self.last_model_forward_ms = 0.0
         self.last_action_call_ms = 0.0
+        self.last_action_chunk_wxyz = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -201,6 +202,7 @@ class HyVLAPolicyWrapper:
         self.last_action_used_cache = False
         self.last_model_forward_ms = 0.0
         self.last_action_call_ms = 0.0
+        self.last_action_chunk_wxyz = None
         return "Hy-VLA wrapper reset"
 
     def invalidate_action_cache(self) -> int:
@@ -225,6 +227,7 @@ class HyVLAPolicyWrapper:
         call_started = time.perf_counter()
         self.last_action_used_cache = False
         self.last_model_forward_ms = 0.0
+        self.last_action_chunk_wxyz = None
 
         # Always grow the per-camera frame buffers on every call so that
         # the K-frame stack stays time-aligned even while we are serving
@@ -297,6 +300,7 @@ class HyVLAPolicyWrapper:
         actions_wxyz[:, 11:15] = actions_xyzw[:, [14, 11, 12, 13]]
 
         # Cache the rest of the chunk for subsequent calls.
+        self.last_action_chunk_wxyz = actions_wxyz[: self.exc_action_size].copy()
         for action in actions_wxyz[1 : self.exc_action_size]:
             self.action_cache.append(action)
         self.last_action_call_ms = (time.perf_counter() - call_started) * 1000.0

@@ -64,6 +64,8 @@ class ExecutionReport:
     state_delta_l2: float | None
     sampled_frame_ids: list[int]
     status: str = "unknown"
+    low_level_instruction: str = ""
+    model_forward_instruction_counts: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +85,10 @@ class ExecutionReport:
             "state_delta_l2": self.state_delta_l2,
             "sampled_frame_ids": list(self.sampled_frame_ids),
             "status": self.status,
+            "low_level_instruction": self.low_level_instruction,
+            "model_forward_instruction_counts": dict(
+                self.model_forward_instruction_counts
+            ),
         }
 
 
@@ -598,6 +604,7 @@ class BurgerFriesHighLevelController:
         prompt_mode: str = "legacy",
         planner_mode: str = "inline_vlm",
         visual_context_mode: str = "recent",
+        include_phase_profile_hints: bool = True,
         backend: HighLevelBackend | None = None,
     ) -> None:
         resolved_phase_names = tuple(phase_names or (
@@ -656,6 +663,7 @@ class BurgerFriesHighLevelController:
                 "visual_context_mode must be 'recent' or 'unseen', "
                 f"got {visual_context_mode!r}"
             )
+        self.include_phase_profile_hints = bool(include_phase_profile_hints)
         self.buffer = FrameBuffer(maxlen=max_memory_frames)
         self.memory_text = ""
         self.phase_names = resolved_phase_names
@@ -782,6 +790,7 @@ class BurgerFriesHighLevelController:
         low_level_call_ms: float,
         model_forward_ms: float,
         used_action_cache: bool,
+        instruction: str = "",
     ) -> None:
         """Accumulate low-level feedback for the active subtask.
 
@@ -802,8 +811,21 @@ class BurgerFriesHighLevelController:
         self._exec_total_low_level_call_ms += max(0.0, float(low_level_call_ms))
         self._exec_total_model_forward_ms += max(0.0, float(model_forward_ms))
         self._exec_action_l2_sum += self._l2_norm(action_vec)
+        normalized_instruction = str(instruction).strip()
+        if normalized_instruction:
+            self._exec_low_level_instruction = normalized_instruction
         if not used_action_cache:
             self._exec_model_forward_calls += 1
+            if normalized_instruction:
+                self._exec_model_forward_instruction_counts[
+                    normalized_instruction
+                ] = (
+                    self._exec_model_forward_instruction_counts.get(
+                        normalized_instruction,
+                        0,
+                    )
+                    + 1
+                )
 
     def _reset_execution_accumulator(self) -> None:
         self._exec_start_state: list[float] | None = None
@@ -814,6 +836,8 @@ class BurgerFriesHighLevelController:
         self._exec_total_low_level_call_ms = 0.0
         self._exec_total_model_forward_ms = 0.0
         self._exec_action_l2_sum = 0.0
+        self._exec_low_level_instruction = ""
+        self._exec_model_forward_instruction_counts: dict[str, int] = {}
 
     @staticmethod
     def _to_float_vector(value: Sequence[float]) -> list[float]:
@@ -912,6 +936,10 @@ class BurgerFriesHighLevelController:
             ),
             sampled_frame_ids=[frame.frame_id for frame in sampled_history],
             status=status,
+            low_level_instruction=self._exec_low_level_instruction,
+            model_forward_instruction_counts=dict(
+                self._exec_model_forward_instruction_counts
+            ),
         )
 
     def build_memory_text(
@@ -922,9 +950,14 @@ class BurgerFriesHighLevelController:
         memory_frames: list[FrameRecord],
         prediction: HighLevelPrediction,
         execution_report: ExecutionReport | None,
+        active_subtask: str | None = None,
     ) -> str:
         phase_name = self.phase_names[min(phase_index, len(self.phase_names) - 1)]
-        phase_prompt = prediction.current_subtask or self.phase_prompts[min(phase_index, len(self.phase_prompts) - 1)]
+        phase_prompt = (
+            active_subtask
+            or prediction.current_subtask
+            or self.phase_prompts[min(phase_index, len(self.phase_prompts) - 1)]
+        )
         frame_ids = ", ".join(frame.short_label() for frame in recent[-self.recent_frames_length :]) or "none"
         del memory_frames
         if execution_report is None:
@@ -1067,11 +1100,7 @@ class BurgerFriesHighLevelController:
         )
 
     def _phase_granularity_contract(self) -> str:
-        examples = "\n".join(
-            f"{index}. {prompt}"
-            for index, prompt in enumerate(self.phase_prompts)
-        )
-        return (
+        contract = (
             "Subtask granularity rule:\n"
             "- Generate object-level pick-and-place phases, not motor primitives.\n"
             "- Each subtask must include the intended final object state and "
@@ -1080,8 +1109,29 @@ class BurgerFriesHighLevelController:
             "move-only, or release-only instructions.\n"
             "- Do not output instructions such as 'pick up ...', 'grasp ...', "
             "or 'move ...' unless they also include the final target placement.\n"
-            "Task-profile phase examples:\n"
-            f"{examples}\n"
+        )
+        if not self.include_phase_profile_hints:
+            return contract
+        examples = "\n".join(
+            f"{index}. {prompt}"
+            for index, prompt in enumerate(self.phase_prompts)
+        )
+        return f"{contract}Task-profile phase examples:\n{examples}\n"
+
+    def _phase_target_hint(self, phase_index: int) -> str:
+        if not self.include_phase_profile_hints:
+            return ""
+        return (
+            "Requested phase-level target: "
+            f"{self._profile_subtask_for_phase(phase_index)}\n"
+        )
+
+    def _planner_granularity_instruction(self) -> str:
+        if self.include_phase_profile_hints:
+            return "Match the requested target granularity and do not explain."
+        return (
+            "Infer the next object-level phase from the task instruction and "
+            "progress summary. Do not explain."
         )
 
     def _build_vlm_plan_next_prompt(
@@ -1115,10 +1165,9 @@ class BurgerFriesHighLevelController:
             f"Previously active subtask: {current_subtask}\n"
             f"Progress summary: {progress_desc}\n"
             f"Next subtask index: {phase_index}\n"
-            f"Requested phase-level target: {self._profile_subtask_for_phase(phase_index)}\n"
+            f"{self._phase_target_hint(phase_index)}"
             "Generate exactly one low-level subtask instruction that should be "
-            "sent to Hy-VLA next. Match the requested target granularity and "
-            "do not explain."
+            f"sent to Hy-VLA next. {self._planner_granularity_instruction()}"
         )
 
     def _build_vlm_prefetch_next_prompt(self, *, phase_index: int) -> str:
@@ -1133,11 +1182,11 @@ class BurgerFriesHighLevelController:
             f"Current published low-level subtask: {current_subtask}\n"
             f"Current subtask index: {self._active_phase_index}\n"
             f"Next subtask index to prepare: {phase_index}\n"
-            f"Requested phase-level target: {self._profile_subtask_for_phase(phase_index)}\n"
+            f"{self._phase_target_hint(phase_index)}"
             "The current subtask has just been sent to the low-level policy and "
             "may still be executing. Prepare exactly one likely next low-level "
-            "subtask instruction for Hy-VLA. Match the requested target "
-            "granularity. Do not verify completion and do not explain."
+            "subtask instruction for Hy-VLA. Do not verify completion. "
+            f"{self._planner_granularity_instruction()}"
         )
 
     def _build_vlm_plan_all_next_prompt(
@@ -1159,11 +1208,11 @@ class BurgerFriesHighLevelController:
             "Generated subtasks so far:\n"
             f"{generated}\n"
             f"Next subtask index to generate: {phase_index}\n"
-            f"Requested phase-level target: {self._profile_subtask_for_phase(phase_index)}\n"
+            f"{self._phase_target_hint(phase_index)}"
             "Assume the generated subtasks above will be executed in order. "
             "Do not repeat any generated subtask. Generate exactly one different "
-            "low-level subtask instruction that should come next. Match the "
-            "requested target granularity and do not explain."
+            "low-level subtask instruction that should come next. "
+            f"{self._planner_granularity_instruction()}"
         )
 
     def _build_completion_status_prompt(
@@ -1195,6 +1244,10 @@ class BurgerFriesHighLevelController:
             f"Visual evidence: {visual_desc}\n"
             "Decide whether the current low-level subtask is already completed "
             "in the provided visual evidence.\n"
+            "Judge the visible goal state of the current subtask, not whether the "
+            "robot is still actively executing that subtask. If the goal state is "
+            "already achieved and the robot has moved on to another object or "
+            "motion, return decision='switch' and status='completed'.\n"
             "Use decision='same' when the robot should keep executing the current "
             "subtask. Use decision='switch' only when the provided image(s) show "
             "the current subtask is completed.\n"
@@ -1204,7 +1257,14 @@ class BurgerFriesHighLevelController:
             "and status='uncertain' when the image is insufficient.\n"
             "Keep next_subtask as an empty string unless you have a direct "
             "suggestion. The separate planner may own next-subtask generation.\n"
-            "Write evidence as one short visual reason."
+            "Write evidence as one short visual reason.\n"
+            "Return exactly one JSON object and no markdown or bullet list:\n"
+            "{"
+            '"decision":"same|switch",'
+            '"status":"running|completed|failed|stuck|uncertain",'
+            '"next_subtask":"",'
+            '"evidence":"short visual reason"'
+            "}"
         )
 
     def begin_step(
@@ -1267,6 +1327,15 @@ class BurgerFriesHighLevelController:
             else max(timestamp_s - self._active_start_timestamp_s, 0.0)
         )
         sampled_history = self._sample_execution_history(duration_s)
+        if request_kind == "verifier":
+            visual_frames = [frame for frame in self.buffer.all() if frame.camera_images]
+            if visual_frames:
+                latest_visual = visual_frames[-1]
+                if all(
+                    int(frame.frame_id) != int(latest_visual.frame_id)
+                    for frame in sampled_history
+                ):
+                    sampled_history = [*sampled_history, latest_visual]
         execution_report = (
             None
             if initial
@@ -1495,6 +1564,7 @@ class BurgerFriesHighLevelController:
             memory_frames=[],
             prediction=prediction,
             execution_report=request.execution_report,
+            active_subtask=next_subtask,
         )
         confidence = prediction.confidence if prediction.parse_ok else 0.0
         if request.initial:
@@ -1867,10 +1937,40 @@ class BurgerFriesHighLevelController:
 
         if not self._has_initial_decision:
             raise RuntimeError("cannot trigger a handoff before the initial plan")
-        return self.step(
+
+        request = self.begin_step(
             timestamp_s=timestamp_s,
             frame_id=frame_id,
             force=True,
             trigger=trigger,
             report_status=report_status,
         )
+        if request is None:
+            return None
+
+        backend_started = time.perf_counter()
+        prediction = HighLevelPrediction(
+            current_subtask=request.planner_candidate_subtask or request.phase_prompt,
+            confidence=1.0,
+            raw_text=(
+                '{"source":"external_completion","decision":"switch",'
+                f'"status":"{report_status}","trigger":"{trigger}"'
+                "}"
+            ),
+            parse_ok=True,
+            action="switch",
+            subtask_status="completed",
+            high_level_status=report_status,
+            evidence=f"{trigger} confirmed completion outside the high-level model.",
+        )
+        prediction = self.finalize_prediction_for_request(request, prediction)
+        backend_finished = time.perf_counter()
+        decision = self.finish_step(request, prediction)
+        decision.timing_ms["backend_predict"] = (
+            backend_finished - backend_started
+        ) * 1000.0
+        decision.timing_ms["external_completion_verifier_skipped"] = 1.0
+        decision.timing_ms["sync_request_to_decision"] = (
+            time.perf_counter_ns() - request.request_started_ns
+        ) / 1_000_000.0
+        return decision

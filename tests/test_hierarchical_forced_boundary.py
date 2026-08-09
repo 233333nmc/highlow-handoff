@@ -265,6 +265,7 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
                 low_level_call_ms=4.0,
                 model_forward_ms=20.0 if frame_id % 7 == 0 else 0.0,
                 used_action_cache=(frame_id % 7 != 0),
+                instruction="Place the hamburg on the tray.",
             )
 
         self.assertEqual(2, len(decisions))
@@ -282,6 +283,11 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
         self.assertEqual("unknown", report.status)
         self.assertEqual(125, report.low_level_steps)
         self.assertEqual(18, report.model_forward_calls)
+        self.assertEqual("Place the hamburg on the tray.", report.low_level_instruction)
+        self.assertEqual(
+            {"Place the hamburg on the tray.": 18},
+            report.model_forward_instruction_counts,
+        )
         self.assertEqual([0, 25, 50, 75, 100, 125], report.sampled_frame_ids)
         self.assertAlmostEqual(5.0, report.end_timestamp_s - report.start_timestamp_s)
 
@@ -433,6 +439,10 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
         self.assertEqual("unfinished", boundary.subtask_status)
         self.assertEqual("Place the hamburg on the tray.", boundary.next_subtask)
         self.assertEqual(0, boundary.phase_index)
+        self.assertIn(
+            "Active subtask: Place the hamburg on the tray.",
+            boundary.memory_text,
+        )
         self.assertIn("action", boundary.prompt)
         self.assertNotIn("confidence", boundary.prompt)
         self.assertNotIn("Current time", boundary.prompt)

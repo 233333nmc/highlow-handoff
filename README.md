@@ -1,210 +1,310 @@
 # RoboTwin High-Level / Low-Level Handoff Report
 
-Updated: 2026-08-07
+Updated: 2026-08-09
 
-本仓库记录 RoboTwin high-level / low-level handoff baseline、Gemma4-12B 相关实验，以及 `next / all` planner 调试结果。
+This repository records the RoboTwin high-level / low-level handoff baseline, Gemma4-12B experiments, and the current `next` / `all` planner debugging results.
 
-## 1. 本周完成
+## 1. Work This Week
 
-本周主要做了三件事：
+This week focused on three items:
 
-- 收口 high-level 输入 / 输出，删掉了未实际参与控制的字段。
-- 增加并验证了 `next / all` 两类 planner 路径，以及 `same / switch` verifier 路径。
-- 在 Gemma4-12B 上跑通了 forced-boundary、verifier 和 planner 相关测试。
+- Cleaned up the high-level input / output interface and removed fields that do not affect control.
+- Added and tested the `next` / `all` planner paths and the `same` / `switch` verifier path.
+- Ran Gemma4-12B forced-boundary, verifier, and planner experiments.
 
-## 2. 当前代码逻辑
+## 2. Current Code Logic
 
-### 2.1 Planner 模式
+### 2.1 Planner Modes
 
-当前支持的 planner 模式包括：
+The current controller supports these planner modes:
 
-- `inline_vlm`：VLM 直接输出下一条 subtask。
-- `vlm_plan_all`：在 episode 开头一次性生成完整的 subtask 列表。
-- `vlm_plan_next`：需要切换时才生成下一条 subtask，可配 prefetch。
-- `profile_all` / `lazy_profile`：确定性调试模式。
+- `inline_vlm`: the VLM directly returns the next subtask.
+- `vlm_plan_all`: the VLM generates the full subtask list at the beginning of the episode.
+- `vlm_plan_next`: after the current subtask is published to the low-level policy, the controller immediately starts generating and caching the next candidate subtask in the background. It does not wait until the verifier confirms completion. For example, after subtask 1 is published, subtask 2 is prefetched; after subtask 2 is published, subtask 3 is prefetched. The verifier only decides when to consume the cached candidate. If the candidate is not ready, the controller falls back to synchronous generation.
+- `profile_all` / `lazy_profile`: deterministic debugging modes.
 
-### 2.2 Verifier / 输出
+### 2.2 Verifier / Output Schema
 
-当前支持的高层输出形式包括：
+The current high-level output schemas include:
 
 - `minimal`
 - `minimal_status`
 - `completion_status`
 
-其中 `completion_status` 用于 `same / switch` 风格判断；`minimal_status` 用于最小控制接口。
+`completion_status` is used for `same` / `switch` decisions. `minimal_status` is the older minimal control interface.
 
-当前 verifier 的主输出是：
+The main verifier output is:
 
 ```json
 {
-  "action": "continue | switch",
-  "subtask_status": "running | completed | failed | stuck | uncertain",
+  "decision": "same | switch",
+  "status": "running | completed | failed | stuck | uncertain",
   "next_subtask": "",
   "evidence": "short visual reason"
 }
 ```
 
-说明：
+Control behavior:
 
-- `confidence` 只做日志记录，不参与控制。
-- `switch` 时清空旧 instruction 下的 action cache。
-- `continue` 时保留当前 action cache。
+- `confidence` is logging-only and does not affect control.
+- `switch` clears the old instruction's action cache.
+- `same` / `running` / `uncertain` keeps the current action cache.
 
 ### 2.3 Visual Context
 
-当前 benchmark 的 boundary 判断使用单张当前 head-camera 图像。
+The default forced-boundary verifier configuration uses one current head-camera image:
 
-- 不再依赖 keyframe 控制路径。
-- 默认不做 history-based keyframe 选择。
-- `next / all` 的默认逻辑不受 keyframe 影响。
+```text
+HL_FORCE_VISUAL_ON_DECISION=True
+HL_RECENT_FRAMES_LENGTH=1
+HL_VLM_MAX_IMAGES=1
+HL_VISUAL_CONTEXT_MODE=recent
+```
 
-### 2.4 `next` / `all` 逻辑
+The code also supports multi-frame inputs:
 
-`vlm_plan_next`：
+- `HL_RECENT_FRAMES_LENGTH>1`: use the tail of recent visual frames.
+- `HL_VISUAL_CONTEXT_MODE=unseen`: use accumulated visual frames that have not yet been consumed by the high-level model.
 
-- 当前 subtask 发布给 low-level 后，立刻后台预取下一条 candidate subtask。
-- 到 boundary 时，verifier 只判断当前 subtask 是否完成。
-- 如果完成且 prefetch 已就绪，就直接发布预取结果。
-- 如果没赶上，就走同步兜底生成。
+The latest code forces the current boundary frame into verifier requests, so a fixed-boundary check does not accidentally reuse the previous periodic frame.
 
-`vlm_plan_all`：
+- The current control path no longer depends on keyframes.
+- History-based keyframe selection is disabled by default.
+- The default `next` / `all` logic is not affected by keyframe code.
 
-- episode 开头一次性生成完整 subtask list。
-- boundary 时只做 verifier 判断。
-- 如果完成，就消费缓存里的下一条 subtask。
-- 如果未完成，就保持当前 subtask 不变。
+### 2.4 `next` / `all` Logic
 
-## 3. Gemma4-12B 结果
+`vlm_plan_next`:
 
-### 3.1 `place_burger_fries` 的 completion verifier
+- After the current subtask is published to the low-level policy, the controller immediately prefetches the next candidate subtask in the background.
+- For example, after subtask 1 is published, it prefetches subtask 2. Once subtask 2 is published, it prefetches subtask 3.
+- At the boundary, the verifier only decides whether the current subtask is completed.
+- If completed and the prefetched candidate is ready, the controller publishes the candidate directly.
+- If the candidate is not ready, the controller falls back to synchronous generation.
 
-实验名：`gemma4_status_217_20260806`
+`vlm_plan_all`:
+
+- The VLM generates the full subtask list at the beginning of the episode.
+- At the boundary, the controller only runs the completion verifier.
+- If the verifier says the current subtask is completed, the controller consumes the next subtask from the cached list.
+- If the verifier says the current subtask is not completed, the controller keeps the current subtask unchanged.
+
+### 2.5 Planner Prompt Granularity
+
+The Gemma4 planner still needs explicit prompt constraints to control subtask granularity. The desired output is object-level phases, not motor primitives such as grasp / lift / move / release.
+
+Later text-only tests corrected an earlier assumption. For `stack_blocks_three`, generic "do not be too fine-grained" constraints were not enough. Gemma4 often followed the literal order of the original instruction and returned:
+
+```text
+Move red block to the center
+Move green block to the center
+Move blue block to the center
+Stack blue block on green block
+Stack green block on red block
+```
+
+The final spatial relation is correct, but the ordered handoff sequence is not. It asks for `blue on green` before `green on red`, so it is not an executable dependency order.
+
+`place_burger_fries` showed a related granularity problem. During one `vlm_plan_all` step-by-step planning debug run, Gemma4 returned:
+
+```text
+step 0: pick up the hamburger with the left arm
+step 1: place the hamburger on the tray
+```
+
+This is not the object-level phase that we want to send to Hy-VLA. The more appropriate granularity is:
+
+```text
+step 0: Place the hamburg on the tray.
+step 1: Place the french fries on the tray.
+```
+
+This example shows that even when the final task semantics are simple, Gemma4 may split one object-level phase into `pick up` / `place` substeps, which does not match the desired low-level instruction granularity.
+
+With task profile hints, five text-only `stack_blocks_three` trials returned the desired output consistently:
+
+```json
+{
+  "subtasks": [
+    "Place the red block at the center.",
+    "Stack the green block on the red block.",
+    "Stack the blue block on the green block."
+  ]
+}
+```
+
+The current code therefore keeps `HL_INCLUDE_PHASE_PROFILE_HINTS` and `HL_PHASE_PROMPTS_JSON` as debugging / benchmark stabilization hooks. They should not be presented as a final-method dependency. The planner prompt still needs more work.
+
+## 3. Gemma4-12B Results
+
+### 3.1 `place_burger_fries` Completion Verifier
 
 - formal episodes: `n=10`
 - `boundary_to_instruction_ready` mean: `632.4 ms`
 - median: `631.9 ms`
 - min / max: `617.5 / 648.4 ms`
-- 说明：这是单张图 completion-verifier 的耗时，不含低层后续恢复执行。
+- This measures the single-image completion verifier latency. It does not include the following low-level recovery / action forward.
 
-### 3.2 `place_burger_fries` 的 `next / all` 对比
+### 3.2 `place_burger_fries` `next` / `all` Comparison
 
-实验名：
+Sections 3.1 and 3.2 both use `place_burger_fries`, but they are not the same code path:
 
-- `gemma4_mtp_vlm_plan_next_prefetch_217_20260807`
-- `gemma4_mtp_vlm_plan_all_217_20260807`
-- `gemma4_mtp_vlm_plan_all_repeated_next_217_20260807`
+- 3.1 measures the completion verifier itself. At the boundary, Gemma4 looks at the image and decides whether the current subtask is completed.
+- 3.2 compares planner strategies. `next` and `all` differ in when the next subtask candidate is generated. At the boundary, the controller mainly runs the verifier and consumes a planner candidate.
+- `vlm_plan_next` generates the next candidate after the current subtask is published, so the boundary may avoid planner waiting time.
+- `vlm_plan_all` generates the full list at episode start, so the boundary consumes the cached next item.
 
-结果：
+Therefore, the latency values in 3.1 and 3.2 should not be treated as repeated measurements of the same operation. They answer different questions.
+
+Intuition:
+
+```text
+3.1:
+  After the boundary, Gemma4 starts looking at the image and verifies whether
+  the current subtask is completed.
+  This mainly reflects single-frame completion verifier cost.
+
+3.2:
+  The next subtask candidate has already been generated or cached by the planner.
+  After the boundary, the system mainly runs the verifier and, if needed,
+  consumes the prepared candidate.
+  Therefore boundary-to-instruction-ready can be shorter.
+```
+
+So the lower 3.2 latency does not mean that the same verifier became faster. It means that after the planner and verifier were separated, part of the planning cost moved before the boundary. 3.2 still requires checking whether the candidate subtask is correct, whether the verifier decision is correct, and whether the low-level policy is actually controlled by the new subtask.
+
+Results:
 
 - `vlm_plan_next_prefetch`: mean `424.3 ms`, median `422.7 ms`, min / max `410.8 / 450.8 ms`
 - `vlm_plan_all`: mean `446.4 ms`, median `444.8 ms`, min / max `428.7 / 472.4 ms`
 - `vlm_plan_all_repeated_next`: mean `441.6 ms`, median `431.7 ms`, min / max `424.4 / 470.0 ms`
 
-结论：
+Takeaway:
 
-- `next` 路径更适合做边界到下一条指令的预取。
-- `all` 路径可用，但更依赖完整 subtask list 的稳定性。
+- `next` is better suited for hiding next-instruction planning latency behind low-level execution.
+- `all` is usable, but depends more strongly on the stability of the full generated subtask list.
 
-### 3.3 六任务 `n=10` 结果
+### 3.3 `stack_blocks_three` Single-Frame Verifier Issue
 
-| RoboTwin task | Forced first-subtask end threshold | Actual trigger sim time / frame | Mean | Median | Std | Min / Max |
-|---|---:|---|---:|---:|---:|---:|
-| `place_burger_fries` | 2.17s | 2.20s / 55 | 779.5 ms | 786.7 ms | 90.5 ms | 653.8 / 906.2 ms |
-| `place_cans_plasticbox` | 2.25s | 2.28s / 57 | 828.1 ms | 824.4 ms | 38.9 ms | 782.5 / 894.3 ms |
-| `put_bottles_dustbin` | 4.01s | 4.04s / 101 | 1134.2 ms | 870.7 ms | 850.2 ms | 791.7 / 3551.4 ms |
-| `stack_blocks_three` | 2.25s | 2.28s / 57 | 1072.2 ms | 1083.7 ms | 83.9 ms | 914.1 / 1190.8 ms |
-| `stack_bowls_three` | 4.53s | 4.56s / 114 | 938.6 ms | 929.1 ms | 72.0 ms | 814.3 / 1037.3 ms |
-| `place_dual_shoes` | 2.61s | 2.64s / 66 | 1041.2 ms | 1025.9 ms | 34.6 ms | 991.5 / 1099.5 ms |
+To test fixed-time triggering followed by one-image high-level verification, `stack_blocks_three` was configured as a two-subtask task:
 
-Overall across the 6 tasks:
+- subtask 1: `Place the red block at the center.`
+- subtask 2: `Stack the green block on the red block, then stack the blue block on the green block.`
 
-- mean: `965.6 ms`
-- median: `899.3 ms`
-- std: `361.5 ms`
-- min / max: `653.8 / 3551.4 ms`
+This experiment already fixed two implementation issues:
 
-## 4. Action cache
+- the forced-boundary verifier now uses the current boundary head-camera frame instead of the previous periodic frame;
+- the `completion_status` prompt explicitly asks Gemma4 to return JSON, avoiding parser fallback to `unknown` when the model responds in natural language.
 
-当前 controller 会记录 high-level 切换时的 stale action cache 丢弃情况。
+However, single-frame completion detection is still unstable:
 
-六任务 Gemma4 MTP 结果里：
+| Fixed boundary | Context frame | JSON parse | VLM decision | Simulator oracle | Result |
+|---:|---|---:|---|---|---|
+| `3.00s` | frame `75` | `2/2` | `continue/running` `2/2` | first phase completed `2/2` | false negative |
+| `3.50s` | frame `88` | `2/2` | `switch` `1/2`, `continue` `1/2` | not stable against oracle | unstable |
+| `4.00s` | frame `100` | `1/2` | `continue/unknown` `2/2` | not stable against oracle | unstable |
 
-- mean `stale_action_cache_discarded`: `4.33`
-- median: `4.50`
-- min / max: `1 / 6`
-- distribution:
-  - `1`: 10 samples
-  - `4`: 20 samples
-  - `5`: 10 samples
-  - `6`: 20 samples
-
-## 5. Demo 网页雏形
-
-已经加了一个静态 demo browser：
-
-- 页面：`docs/demo/index.html`
-- 数据：`docs/demo/data/demos.json`
-- 本地数据兜底：`docs/demo/data/demos.js`
-- 视频目录：`docs/demo/assets/`
-
-当前页面能展示：
-
-- 每个 RoboTwin task 的 demo slot。
-- 当前 subtask。
-- verifier 的 `same / switch` 判断。
-- 下一条 high-level instruction。
-- handoff latency。
-- action cache 行为。
-- 六任务 timing summary。
-
-网页已经附带 GitHub Pages 自动部署配置：
+Typical false negative:
 
 ```text
-.github/workflows/deploy-demo-pages.yml
+Simulator oracle: red block phase is completed.
+Gemma4 verifier: same / running
+Evidence: the robot is currently interacting with the green block, not the red block.
 ```
 
-仓库启用 GitHub Pages 后，公开网址为：
+Takeaway:
 
-```text
-https://233333nmc.github.io/highlow-handoff/
-```
+- The fixed-boundary handoff mechanism works.
+- The current boundary frame is correctly sent to the high-level VLM.
+- The switch / continue action-cache logic is logged correctly.
+- The remaining issue is that Gemma4 cannot reliably determine `stack_blocks_three` subtask completion from a single current image.
 
-每次更新 `docs/demo/` 并推送到 `highlow-handoff-baseline` 或 `main` 后，GitHub Actions 会自动重新部署页面。视频文件和 demo 数据也会随仓库一起发布，因此后续只需要更新 `docs/demo/assets/`、`demos.json` 和 `demos.js`。
+Therefore, `stack_blocks_three` should not currently use a single-frame VLM verifier as the stable subtask boundary detector. More promising next steps are multi-frame visual context or a dedicated completion-detection benchmark for verifier prompt / model tuning.
 
-后续如果策略或 demo 视频更新，只需要：
+### 3.4 Low-Level Instruction Sensitivity
 
-1. 把视频放到 `docs/demo/assets/`。
-2. 在 `docs/demo/data/demos.json` 和 `docs/demo/data/demos.js` 中填入对应 `video` 路径。
-3. 更新 subtask、verifier output 和 timing 字段。
+We also ran instruction probes to check whether the Hy-VLA low-level policy is actually controlled by high-level subtask instructions. The probe disables the high-level controller and only changes the low-level instruction:
 
-## 6. 复现
+- full task instruction;
+- correct first-subtask instruction;
+- wrong subtask instruction;
+- empty instruction.
 
-下面的命令都把缓存、日志、模型和评测结果写在 `high_level_memory` 个人目录下，不使用系统临时目录。
+Each run records the actual `low_level_instruction` received by the low-level policy and saves rollout video / trace when enabled.
 
-### 6.1 目录结构
+Current observations:
 
-建议使用以下目录布局：
+| Task | Probe variants | Observation |
+|---|---|---|
+| `place_burger_fries` | full / correct subtask / wrong subtask / empty | All four variants can complete the full burger + fries task. This suggests that, for this task, the low-level policy may rely strongly on vision and task priors. Even a partial, wrong, or empty instruction may still lead to full-task completion. |
+| `stack_blocks_three` | full / correct subtask / wrong subtask / empty | In a single-run probe, full and correct-subtask instructions succeeded, while wrong / empty instructions failed. This task is more useful than burger/fries for observing whether the instruction changes low-level behavior, but it still needs more samples. |
+| `put_bottles_dustbin` | full / correct subtask | The full task can run, but the probe did not fully cover wrong / empty variants, so this is not a main conclusion yet. |
+| `hanging_mug` | full / correct subtask | The task itself has low success rate, so the current probe is not suitable for judging language sensitivity. |
+
+Interpretation:
+
+- Current evidence suggests that, without additional training, we may not be able to strictly guarantee that Hy-VLA follows the high-level subtask instruction. In tasks such as `place_burger_fries`, the low-level policy may keep completing the full task even when the high-level system does not publish the full task decomposition.
+- This is not a final conclusion. Possible explanations include:
+  - the Hy-VLA checkpoint may mainly be trained on full-task instructions, so subtask instructions are not hard constraints;
+  - subtask-level fine-tuning / LoRA may be needed for stricter obedience to high-level phase instructions;
+  - our understanding of Hy-VLA language conditioning may still be incomplete;
+  - there may still be a code-path issue, such as the full instruction influencing the low-level policy somewhere, or the action-cache / trace logging not fully covering the true model input.
+- We have checked the instruction trace and confirmed the recorded `low_level_instruction`, but that alone is not a final proof. To demonstrate that the high-level controller is effective, final success is not enough. We also need to show the low-level instruction trace, whether the action cache was cleared, and whether the first real low-level model forward after a switch used the new instruction.
+- `stack_blocks_three` is a better candidate for the handoff demo because wrong / empty instructions are more likely to fail, making it easier to observe whether the high-level instruction actually changes low-level behavior.
+
+## 4. Action Cache
+
+The controller records stale action-cache behavior whenever the high-level state is committed.
+
+Current logic:
+
+- `decision=switch` clears the old instruction's action cache.
+- `decision=same` / `running` / `uncertain` keeps the current action cache.
+- Each high-level commit records these fields in `hierarchical_decisions.jsonl`:
+  - `action_cache_len_before_high_level_commit`
+  - `action_cache_len_after_high_level_commit`
+  - `stale_action_cache_discarded`
+  - `action_cache_cleared`
+  - `same_decision_kept_action_cache`
+
+The latest `next/all` and `stack_blocks_three` fixed-boundary experiments still need a consolidated action-cache statistics table. Old multi-task results are no longer included in this README.
+
+## 5. Reproduction
+
+The commands below write caches, logs, model files, and evaluation results under the user's personal directory. They do not use system temporary directories. Most experiment files live under `high_level_memory`. The Gemma4 transformers API server uses `rt/g4_transformers` under the personal directory by default; this can be changed with `GEMMA4_TRANSFORMERS_RUNTIME_ROOT`.
+
+### 5.1 Directory Layout
+
+Recommended layout:
 
 ```text
 <WORK_ROOT>/
-├── Hy-Embodied-0.5-VLA/       # 本仓库
+├── Hy-Embodied-0.5-VLA/       # this repository
 ├── RoboTwin/                   # RoboTwin simulator
-├── checkpoints/                # low-level / high-level checkpoint
+├── checkpoints/                # low-level / high-level checkpoints
 ├── envs/                       # unified Python 3.10 evaluation environment
 ├── profile_results/            # handoff logs and timing results
 ├── model_cache/                # persistent Hugging Face cache
-└── runtime_cache/              # Gemma runtime cache
+└── runtime_cache/              # evaluation runtime cache
 ```
 
-本文中的 `<WORK_ROOT>` 指：
+In the commands below, `<WORK_ROOT>` is:
 
 ```text
 /mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
 ```
 
-如果换到其他机器，只需要把下面命令中的 `WORK_ROOT` 改成对应的个人工作目录。
+If running on another machine, update `WORK_ROOT` accordingly.
 
-### 6.2 获取代码
+The Gemma4 transformers server also has a default runtime cache:
+
+```text
+/mnt/cpfs/epic-user/niumuchun-20260612/rt/g4_transformers/
+```
+
+This path is controlled by `GEMMA4_TRANSFORMERS_RUNTIME_ROOT` in `scripts/serve_gemma4_12b_transformers_api.sh`.
+
+### 5.2 Get the Code
 
 ```bash
 export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
@@ -218,7 +318,7 @@ git clone https://github.com/robotwin-Platform/RoboTwin.git RoboTwin
 cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
 ```
 
-如果仓库已经存在，不需要重复 clone：
+If the repository already exists:
 
 ```bash
 cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
@@ -226,19 +326,19 @@ git checkout highlow-handoff-baseline
 git pull
 ```
 
-### 6.3 创建 RoboTwin + Hy-VLA 评测环境
+### 5.3 Create the RoboTwin + Hy-VLA Evaluation Environment
 
-评测使用统一的 Python 3.10 环境，使 RoboTwin simulator、Hy-VLA low-level policy 和 high-level handoff controller 在同一个进程中运行。
+The evaluation uses a unified Python 3.10 environment so the RoboTwin simulator, Hy-VLA low-level policy, and high-level handoff controller run in the same process.
 
-前置条件：
+Prerequisites:
 
-- Linux；
-- 可用的 CUDA GPU；
-- `/usr/bin/python3.10`；
-- `uv`；
-- Gemma4 MTP 复现实验需要两个当前租约可见的 GPU。
+- Linux;
+- available CUDA GPU;
+- `/usr/bin/python3.10`;
+- `uv`;
+- Gemma4 MTP reproduction requires two GPUs visible to the current lease.
 
-如果系统还没有 `uv`，先按本机环境安装。然后运行：
+If `uv` is not installed, install it for the current environment first. Then run:
 
 ```bash
 export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
@@ -247,17 +347,17 @@ cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
 bash scripts/install_robotwin_hyvla_eval_env.sh
 ```
 
-该脚本会创建：
+This creates:
 
 ```text
 $WORK_ROOT/envs/robotwin_hyvla_eval/
 ```
 
-并安装 CUDA PyTorch、Hy-VLA 推理依赖、RoboTwin simulator 依赖以及 cuRobo。脚本内部已经把 `TMPDIR`、Hugging Face cache、uv cache 和 matplotlib cache 指向个人目录。
+The script installs CUDA PyTorch, Hy-VLA inference dependencies, RoboTwin simulator dependencies, and cuRobo. It also points `TMPDIR`, Hugging Face cache, uv cache, and matplotlib cache to the personal directory.
 
-### 6.4 下载 RoboTwin 仿真资源
+### 5.4 Download RoboTwin Simulation Assets
 
-当前实验是 RoboTwin inference/evaluation，不需要下载 RoboTwin training demonstrations。需要下载的是 simulator 运行所需的背景、物体和 embodiment 资源。
+These experiments run RoboTwin inference/evaluation. They do not require RoboTwin training demonstrations. They do require simulator assets such as backgrounds, objects, and embodiment files.
 
 ```bash
 export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
@@ -266,21 +366,21 @@ cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
 bash scripts/download_robotwin_assets_persistent.sh
 ```
 
-资源会保存到：
+Assets are saved to:
 
 ```text
 $WORK_ROOT/RoboTwin/assets/
 ```
 
-### 6.5 下载 low-level checkpoint
+### 5.5 Download the Low-Level Checkpoint
 
-Hy-VLA low-level checkpoint 来自 Hugging Face 的：
+The Hy-VLA low-level checkpoint is:
 
 ```text
 tencent/Hy-Embodied-0.5-VLA-RoboTwin
 ```
 
-推荐使用仓库脚本之外的持久 Hugging Face cache，并把模型保存到统一目录：
+Use a persistent Hugging Face cache and save the model under the shared checkpoint directory:
 
 ```bash
 export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
@@ -294,51 +394,51 @@ hf download tencent/Hy-Embodied-0.5-VLA-RoboTwin \
   --local-dir "$WORK_ROOT/checkpoints/Hy-Embodied-0.5-VLA-RoboTwin"
 ```
 
-最终目录应为：
+Expected final directory:
 
 ```text
 $WORK_ROOT/checkpoints/Hy-Embodied-0.5-VLA-RoboTwin/
 ```
 
-### 6.6 下载 Gemma4-12B
+### 5.6 Download Gemma4-12B
 
-Gemma4 主模型使用：
+The main Gemma4 model is:
 
 ```text
 google/gemma-4-12B-it
 ```
 
-模型条款可能要求先在 Hugging Face 页面接受许可，并在当前 shell 中配置 `HF_TOKEN`。下载命令为：
+The model terms may require accepting the license on Hugging Face and setting `HF_TOKEN` in the current shell.
 
 ```bash
 export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
 cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
 
-# 如果 Hugging Face 需要认证：
+# If Hugging Face authentication is required:
 # export HF_TOKEN=...
 
 bash scripts/download_gemma4_12b.sh
 ```
 
-主模型会保存到：
+The main model is saved to:
 
 ```text
 $WORK_ROOT/checkpoints/google/gemma-4-12B-it/
 ```
 
-Gemma4 native MTP 还需要一个兼容的 assistant checkpoint。该 checkpoint 不是由 `download_gemma4_12b.sh` 自动生成的，复现实验时需要单独准备，并通过下面的路径传给 server：
+Native MTP also needs a compatible assistant checkpoint. This checkpoint is not generated by `download_gemma4_12b.sh`; prepare it separately and pass it to the server as:
 
 ```text
 $WORK_ROOT/checkpoints/google/gemma-4-12B-it-assistant/
 ```
 
-如果不提供 `GEMMA4_ASSISTANT_MODEL_PATH`，可以启动普通 Gemma4 inference，但不能复现本文中的 native MTP 配置。
+If `GEMMA4_ASSISTANT_MODEL_PATH` is not provided, the server can still run normal Gemma4 inference, but it will not reproduce the native MTP setup used here.
 
-### 6.7 启动 Gemma4 API server
+### 5.7 Start the Gemma4 API Server
 
-当前 high-level controller 通过本地 OpenAI-compatible HTTP API 调用 Gemma4。启动 server 的终端保持运行，然后在另一个终端运行 RoboTwin evaluation。
+The high-level controller calls Gemma4 through a local OpenAI-compatible HTTP API. Keep this server running in one terminal, and run RoboTwin evaluation from another terminal.
 
-`GEMMA4_TRANSFORMERS_PATH` 必须指向支持 `gemma4_unified` 的 Transformers 版本目录。若该版本已经安装在脚本默认 cache 中，可以省略这一项；否则需要显式指定。
+`GEMMA4_TRANSFORMERS_PATH` must point to a Transformers version that supports `gemma4_unified`. If the compatible version is already in the script's default cache, it can be omitted; otherwise set it explicitly.
 
 ```bash
 export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
@@ -354,17 +454,23 @@ GEMMA4_NUM_ASSISTANT_TOKENS_SCHEDULE=heuristic \
 bash scripts/serve_gemma4_12b_transformers_api.sh
 ```
 
-这里的 `cuda:0` 和 `cuda:1` 是当前租约可见 GPU 的相对编号，不要手动覆盖 `CUDA_VISIBLE_DEVICES`。如果当前租约只有一张 GPU，需要改用不带 assistant checkpoint 的普通推理配置，或者申请两张可见 GPU。
+`cuda:0` and `cuda:1` are relative to the GPUs visible in the current lease. Do not manually override `CUDA_VISIBLE_DEVICES`. If only one GPU is visible, use normal inference without the assistant checkpoint, or request two visible GPUs.
 
-### 6.8 运行 `vlm_plan_next`
+To override the default runtime cache:
 
-`vlm_plan_next` 的逻辑是：当前 instruction 发布后，立即预取下一条 candidate subtask；到 boundary 时，verifier 先判断当前 subtask 是否完成，如果完成且 candidate 已经 ready，就直接发布 candidate，否则同步生成作为兜底。
+```bash
+GEMMA4_TRANSFORMERS_RUNTIME_ROOT="$WORK_ROOT/runtime_cache/gemma4_transformers"
+```
+
+### 5.8 Run `vlm_plan_next`
+
+`vlm_plan_next` publishes the current instruction, immediately prefetches the next candidate subtask, and later lets the boundary verifier decide whether to consume that candidate.
 
 ```bash
 export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
 cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
 
-LOG_DIR="$WORK_ROOT/profile_results/robotwin_burger_fries/gemma4_vlm_plan_next_$(date +%Y%m%d_%H%M%S)" \
+LOG_DIR="$WORK_ROOT/profile_results/run_vlm_plan_next_$(date +%Y%m%d_%H%M%S)" \
 TEST_NUM=11 \
 SEED=10000 \
 TASK_NAME=place_burger_fries \
@@ -380,15 +486,15 @@ GEMMA4_SERVER_URL=http://127.0.0.1:8003 \
 bash scripts/eval_robotwin_burger_fries_forced_gemma4_12b_status.sh
 ```
 
-### 6.9 运行 `vlm_plan_all`
+### 5.9 Run `vlm_plan_all`
 
-`vlm_plan_all` 的逻辑是：episode 开头一次性生成完整 subtask list；之后在 boundary 处只做 completion verifier，确认完成后消费缓存中的下一条 subtask。
+`vlm_plan_all` generates the full subtask list at episode start. At the boundary, the controller only runs the completion verifier and consumes the next cached subtask if the current one is completed.
 
 ```bash
 export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
 cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
 
-LOG_DIR="$WORK_ROOT/profile_results/robotwin_burger_fries/gemma4_vlm_plan_all_$(date +%Y%m%d_%H%M%S)" \
+LOG_DIR="$WORK_ROOT/profile_results/run_vlm_plan_all_$(date +%Y%m%d_%H%M%S)" \
 TEST_NUM=11 \
 SEED=10000 \
 TASK_NAME=place_burger_fries \
@@ -404,54 +510,93 @@ GEMMA4_SERVER_URL=http://127.0.0.1:8003 \
 bash scripts/eval_robotwin_burger_fries_forced_gemma4_12b_status.sh
 ```
 
-两条命令使用相同的 RoboTwin task、2.17s forced boundary、单张当前 head-camera 图像和 completion verifier；区别只在于下一条 subtask 的规划时机。
+The two commands use the same RoboTwin task, 2.17s forced boundary, one current head-camera image, and completion verifier. They differ only in when the next subtask is planned.
 
-### 6.10 结果和日志位置
+### 5.10 Run the Two-Subtask `stack_blocks_three` Fixed-Boundary Verifier
 
-每次评测会在 `LOG_DIR` 下写入：
+This command reproduces the issue in Section 3.3: at a fixed time, the controller sends the current head-camera frame to Gemma4 and asks whether the first subtask is completed.
+
+```bash
+export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
+cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
+
+PHASES='Place the red block at the center.|||Stack the green block on the red block, then stack the blue block on the green block.'
+
+LOG_DIR="$WORK_ROOT/profile_results/run_stack_blocks_fixed_verifier_$(date +%Y%m%d_%H%M%S)" \
+TEST_NUM=2 \
+SEED=10000 \
+TASK_NAME=stack_blocks_three \
+HANDOFF_TRIGGER=forced_boundary \
+FORCED_BOUNDARY_S=3.00 \
+MAX_FORCED_BOUNDARIES=1 \
+HL_BACKEND=gemma4_vllm \
+HL_PLANNER_MODE=profile_all \
+HL_PROMPT_MODE=completion_status \
+HL_PHASE_PROMPTS_JSON="$PHASES" \
+HL_INCLUDE_PHASE_PROFILE_HINTS=True \
+HL_FORCE_VISUAL_ON_DECISION=True \
+HL_RECENT_FRAMES_LENGTH=1 \
+HL_VLM_MAX_IMAGES=1 \
+GEMMA4_SERVER_URL=http://127.0.0.1:8003 \
+ROBOTWIN_EVAL_VIDEO_LOG=True \
+LOW_LEVEL_TRACE_EVERY_STEP=True \
+bash scripts/eval_robotwin_burger_fries_forced_gemma4_12b_status.sh
+```
+
+Important logs:
+
+```text
+hierarchical_decisions.jsonl      # high-level prompt / response / same-switch / timing
+low_level_instruction_trace.jsonl # low-level instruction received by real model forward
+eval_results/.../*.mp4            # rollout video, if ROBOTWIN_EVAL_VIDEO_LOG=True
+```
+
+### 5.11 Results and Log Locations
+
+Each evaluation writes these files under `LOG_DIR`:
 
 ```text
 hierarchical.log
 hierarchical_decisions.jsonl
 ```
 
-RoboTwin 的 episode 结果会写到：
+RoboTwin episode results are written to:
 
 ```text
 $WORK_ROOT/RoboTwin/eval_result/
 ```
 
-当前脚本默认运行 11 个 rollout，其中 episode 0 作为额外 runtime warm-up，正式 latency 统计使用 episode 1-10。
+If `ROBOTWIN_EVAL_RESULT_ROOT` is set, episode results are written there instead.
 
-### 6.11 可选：多任务运行
+The default scripts run 11 rollouts. Episode 0 is treated as an extra runtime warm-up; formal latency statistics use episodes 1-10.
 
-如果需要复现六任务 Gemma4 结果，可以使用多任务脚本，并通过 `HL_PLANNER_MODE` 选择 `vlm_plan_next` 或 `vlm_plan_all`：
+### 5.12 Optional: Multi-Task Run
+
+To re-run Gemma4 on six RoboTwin tasks, use the multi-task script and set `HL_PLANNER_MODE` to `vlm_plan_next` or `vlm_plan_all`. This runs the current `completion_status` / single-frame verifier path. Results should be summarized separately before being included in a report.
 
 ```bash
 export WORK_ROOT=/mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory
 cd "$WORK_ROOT/Hy-Embodied-0.5-VLA"
 
-LOG_DIR="$WORK_ROOT/profile_results/robotwin_multitask_gemma4_12b_$(date +%Y%m%d_%H%M%S)" \
+OUT_ROOT="$WORK_ROOT/profile_results/run_multitask_gemma4_$(date +%Y%m%d_%H%M%S)" \
 TEST_NUM=11 \
 SEED=10000 \
 HL_PLANNER_MODE=vlm_plan_next \
-HL_PROMPT_MODE=completion_status \
-HL_FORCE_VISUAL_ON_DECISION=True \
-HL_RECENT_FRAMES_LENGTH=1 \
-HL_VLM_MAX_IMAGES=1 \
 GEMMA4_SERVER_URL=http://127.0.0.1:8003 \
 bash scripts/eval_robotwin_multitask_gemma4_12b_status_n10.sh
 ```
 
-## 7. 目前还在做的事
+## 6. Ongoing Work
 
-- 整理 action cache 统计结果表。
-- 继续调 verifier completion criteria，减少 false negative。
-- 继续调 prompt，让 planner 输出更合适粒度的 subtask。
+- Consolidate action-cache statistics for the latest `next/all`, fixed-boundary, and `stack_blocks_three` experiments.
+- Improve verifier completion criteria, especially the `stack_blocks_three` single-frame false negatives.
+- Test multi-frame verifier settings such as `HL_RECENT_FRAMES_LENGTH=3` or `HL_VISUAL_CONTEXT_MODE=unseen`.
+- Continue tuning planner prompts so the model outputs object-level, executable-order subtasks instead of overly fine-grained or dependency-invalid instructions.
+- Build a formal demo package with rollout video, high-level prompt / response, low-level instruction trace, and action-cache switch records.
 
-## 8. 说明
+## 7. Notes
 
-- 当前 README 只保留我们这条 RoboTwin handoff 线的工作。
-- 不再写 Hy-VLA 原论文式介绍和原始 benchmark 结果。
-- 当前结果是 latency-only，不含 full-task success。
-- 后续重点仍是 async pipeline、same/switch verifier 和 completion detection。
+- This README only covers the RoboTwin handoff line of work.
+- It no longer includes the original Hy-VLA paper-style introduction or original benchmark results.
+- Current results include latency, planner/debug behavior, and some full-task success observations. Full-task success alone does not prove that the high-level subtask causally controlled the low-level policy, because Hy-VLA may have strong visual / task priors in some tasks.
+- The next focus is async execution, same/switch verification, completion detection, and demo visualization.

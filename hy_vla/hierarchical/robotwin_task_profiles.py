@@ -14,17 +14,27 @@ import numpy as np
 
 
 FirstSubtaskOracle = Callable[[Any], bool]
+PhaseOracle = Callable[[Any, int], bool]
 
 
 @dataclass(frozen=True, slots=True)
 class RoboTwinTaskProfile:
-    """Static high-level phases plus a read-only first-subtask oracle."""
+    """Static high-level phases plus read-only simulator oracles."""
 
     task_name: str
     task_instruction: str
     phase_names: tuple[str, ...]
     phase_prompts: tuple[str, ...]
     first_subtask_complete: FirstSubtaskOracle
+    phase_complete: PhaseOracle | None = None
+
+    def is_phase_complete(self, env: Any, phase_index: int) -> bool:
+        """Return whether a specific high-level phase is complete."""
+
+        index = int(phase_index)
+        if self.phase_complete is not None:
+            return bool(self.phase_complete(env, index))
+        return index == 0 and bool(self.first_subtask_complete(env))
 
 
 def _position(actor_or_pose: Any) -> np.ndarray:
@@ -39,9 +49,17 @@ def _quaternion(actor: Any) -> np.ndarray:
 
 
 def _functional_point_xy(actor: Any, point_id: int) -> np.ndarray:
-    point = actor.get_functional_point(point_id)
+    point = _functional_point(actor, point_id)
+    return point[:2]
+
+
+def _functional_point(actor: Any, point_id: int) -> np.ndarray:
+    try:
+        point = actor.get_functional_point(point_id, "pose")
+    except TypeError:
+        point = actor.get_functional_point(point_id)
     value = point.p if hasattr(point, "p") else point
-    return np.asarray(value, dtype=float)[:2]
+    return np.asarray(value, dtype=float)
 
 
 def _left_open(env: Any) -> bool:
@@ -113,6 +131,39 @@ def _blocks_first_subtask_complete(env: Any) -> bool:
         return False
 
 
+def _block_stacked_on(upper: Any, lower: Any) -> bool:
+    upper_position = _position(upper)
+    lower_position = _position(lower)
+    target = np.asarray(
+        [lower_position[0], lower_position[1], lower_position[2] + 0.05],
+        dtype=float,
+    )
+    eps = np.asarray([0.025, 0.025, 0.012], dtype=float)
+    return bool(np.all(np.abs(upper_position - target) < eps))
+
+
+def _blocks_phase_complete(env: Any, phase_index: int) -> bool:
+    try:
+        if phase_index == 0:
+            return _blocks_first_subtask_complete(env)
+        if phase_index == 1:
+            return (
+                _blocks_first_subtask_complete(env)
+                and _block_stacked_on(env.block2, env.block1)
+                and _both_open(env)
+            )
+        if phase_index == 2:
+            return (
+                _blocks_first_subtask_complete(env)
+                and _block_stacked_on(env.block2, env.block1)
+                and _block_stacked_on(env.block3, env.block2)
+                and _both_open(env)
+            )
+        return False
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return False
+
+
 def _bowls_first_subtask_complete(env: Any) -> bool:
     try:
         target = np.asarray(env.bowl1_target_pose, dtype=float)
@@ -140,6 +191,50 @@ def _shoes_first_subtask_complete(env: Any) -> bool:
             and np.all(np.abs(quaternion - target_quaternion) < 0.07)
             and abs(float(position[2]) - target_z) < 0.03
             and _left_open(env)
+        )
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return False
+
+
+def _hanging_mug_first_subtask_complete(env: Any) -> bool:
+    try:
+        mug_position = _position(env.mug)
+        middle_position = np.asarray(env.middle_pos[:3], dtype=float)
+        return (
+            float(np.linalg.norm(mug_position[:2] - middle_position[:2])) < 0.06
+            and abs(float(mug_position[2]) - float(middle_position[2])) < 0.08
+        )
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return False
+
+
+def _put_object_cabinet_first_subtask_complete(env: Any) -> bool:
+    try:
+        qpos = np.asarray(env.cabinet.get_qpos(), dtype=float)
+        return qpos.size > 0 and abs(float(qpos[0])) > 0.08
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return False
+
+
+def _handover_block_first_subtask_complete(env: Any) -> bool:
+    try:
+        box_position = _position(env.box)
+        middle_position = np.asarray(env.block_middle_pose[:3], dtype=float)
+        return (
+            float(np.linalg.norm(box_position[:2] - middle_position[:2])) < 0.08
+            and abs(float(box_position[2]) - float(middle_position[2])) < 0.08
+        )
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return False
+
+
+def _handover_mic_first_subtask_complete(env: Any) -> bool:
+    try:
+        microphone_position = _position(env.microphone)
+        middle_position = np.asarray(env.handover_middle_pose[:3], dtype=float)
+        return (
+            float(np.linalg.norm(microphone_position[:2] - middle_position[:2])) < 0.08
+            and abs(float(microphone_position[2]) - float(middle_position[2])) < 0.08
         )
     except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         return False
@@ -181,12 +276,14 @@ _PROFILES: dict[str, RoboTwinTaskProfile] = {
     "stack_blocks_three": RoboTwinTaskProfile(
         task_name="stack_blocks_three",
         task_instruction="Stack the red, green, and blue blocks in order.",
-        phase_names=("place red block", "stack green and blue blocks"),
+        phase_names=("place red block", "stack green block", "stack blue block"),
         phase_prompts=(
             "Place the red block at the center of the table.",
-            "Stack the green block on the red block, then stack the blue block on the green block.",
+            "Stack the green block on the red block.",
+            "Stack the blue block on the green block.",
         ),
         first_subtask_complete=_blocks_first_subtask_complete,
+        phase_complete=_blocks_phase_complete,
     ),
     "stack_bowls_three": RoboTwinTaskProfile(
         task_name="stack_bowls_three",
@@ -207,6 +304,46 @@ _PROFILES: dict[str, RoboTwinTaskProfile] = {
             "Place the right shoe into the right side of the shoe box with the toe pointing left.",
         ),
         first_subtask_complete=_shoes_first_subtask_complete,
+    ),
+    "hanging_mug": RoboTwinTaskProfile(
+        task_name="hanging_mug",
+        task_instruction="Hang the mug on the rack.",
+        phase_names=("prepare mug for handover", "hang mug on rack"),
+        phase_prompts=(
+            "Place the mug at the middle handover position.",
+            "Transfer the mug to the right arm and hang it on the rack.",
+        ),
+        first_subtask_complete=_hanging_mug_first_subtask_complete,
+    ),
+    "put_object_cabinet": RoboTwinTaskProfile(
+        task_name="put_object_cabinet",
+        task_instruction="Open the cabinet and put the object inside.",
+        phase_names=("open cabinet", "place object in cabinet"),
+        phase_prompts=(
+            "Open the cabinet drawer.",
+            "Pick up the object and place it inside the open cabinet.",
+        ),
+        first_subtask_complete=_put_object_cabinet_first_subtask_complete,
+    ),
+    "handover_block": RoboTwinTaskProfile(
+        task_name="handover_block",
+        task_instruction="Hand over the red block and place it on the blue target block.",
+        phase_names=("move block to handover point", "place block on target"),
+        phase_prompts=(
+            "Move the red block to the center handover point.",
+            "Transfer the red block to the other arm and place it on the blue target block.",
+        ),
+        first_subtask_complete=_handover_block_first_subtask_complete,
+    ),
+    "handover_mic": RoboTwinTaskProfile(
+        task_name="handover_mic",
+        task_instruction="Hand over the microphone from one arm to the other.",
+        phase_names=("move microphone to handover point", "complete microphone handover"),
+        phase_prompts=(
+            "Move the microphone to the center handover point.",
+            "Transfer the microphone to the other arm and lift it away from the handover point.",
+        ),
+        first_subtask_complete=_handover_mic_first_subtask_complete,
     ),
 }
 
