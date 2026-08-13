@@ -75,13 +75,16 @@ class Qwen36VllmBackend:
         if self.output_schema not in {
             "legacy",
             "minimal",
+            "next_subtask",
             "minimal_status",
             "completion_status",
+            "completion_bool",
             "subtask_plan",
         }:
             raise ValueError(
-                "output_schema must be 'legacy', 'minimal', 'minimal_status', "
-                "'completion_status', or 'subtask_plan', "
+                "output_schema must be 'legacy', 'minimal', 'next_subtask', "
+                "'minimal_status', "
+                "'completion_status', 'completion_bool', or 'subtask_plan', "
                 f"got {output_schema!r}"
             )
         if include_chat_template_kwargs:
@@ -325,6 +328,11 @@ class Qwen36VllmBackend:
                 "next_subtask as an empty string unless you have a direct "
                 "suggestion. Evidence must be one short visual reason."
             )
+        if schema == "completion_bool":
+            return (
+                "\nReturn exactly one JSON object and no Markdown:\n"
+                '{"completed": true | false}'
+            )
         if schema == "minimal_status":
             return (
                 "\nReturn exactly one JSON object and no Markdown:\n"
@@ -335,6 +343,11 @@ class Qwen36VllmBackend:
                 "unfinished and the low-level policy should keep executing "
                 "the current instruction. Use action='switch' only when the "
                 "system should publish next_subtask to the low-level policy."
+            )
+        if schema == "next_subtask":
+            return (
+                "\nReturn exactly one JSON object and no Markdown:\n"
+                '{"next_subtask": string}'
             )
         if schema == "minimal":
             return (
@@ -366,7 +379,7 @@ class Qwen36VllmBackend:
         prompt: str,
         recent_positions: Sequence[int | None],
         output_schema: str | None = None,
-    ) -> tuple[dict[str, Any], dict[str, float]]:
+    ) -> tuple[dict[str, Any], dict[str, float], str, str]:
         content: list[dict[str, Any]] = []
         encoded_bytes = 0
         total_pixels = 0
@@ -384,14 +397,15 @@ class Qwen36VllmBackend:
             total_pixels += width * height
             widths.append(width)
             heights.append(height)
+        response_schema = self._response_schema(
+            recent_positions,
+            output_schema=output_schema,
+        )
+        final_prompt = prompt + response_schema
         content.append(
             {
                 "type": "text",
-                "text": prompt
-                + self._response_schema(
-                    recent_positions,
-                    output_schema=output_schema,
-                ),
+                "text": final_prompt,
             }
         )
         payload = {
@@ -415,7 +429,7 @@ class Qwen36VllmBackend:
             "image_avg_height": (
                 sum(heights) / image_count if image_count else 0.0
             ),
-        }
+        }, response_schema, final_prompt
 
     def _request(
         self,
@@ -424,9 +438,9 @@ class Qwen36VllmBackend:
         prompt: str,
         recent_positions: Sequence[int | None],
         output_schema: str | None = None,
-    ) -> tuple[str, dict[str, float]]:
+    ) -> tuple[str, dict[str, float], str, str]:
         encode_started = time.perf_counter_ns()
-        payload, payload_metrics = self._build_payload(
+        payload, payload_metrics, response_schema, final_prompt = self._build_payload(
             images=images,
             prompt=prompt,
             recent_positions=recent_positions,
@@ -482,7 +496,7 @@ class Qwen36VllmBackend:
             **usage_metrics,
             "request_encode": self._elapsed_ms(encode_started, encode_finished),
             "vllm_request": self._elapsed_ms(request_started, request_finished),
-        }
+        }, response_schema, final_prompt
 
     def _warmup(self, warmup_calls: int) -> float:
         if warmup_calls <= 0:
@@ -503,6 +517,11 @@ class Qwen36VllmBackend:
                 '{"decision":"same","status":"uncertain",'
                 '"next_subtask":"","evidence":"warmup"}.'
             )
+        elif self.output_schema == "completion_bool":
+            prompt = (
+                "Warm up the high-level robot completion verifier. Return "
+                '{"completed":false}.'
+            )
         elif self.output_schema == "minimal_status":
             prompt = (
                 "Warm up the high-level robot planner. Return "
@@ -510,6 +529,11 @@ class Qwen36VllmBackend:
                 '"subtask_status":"unknown"}.'
             )
         elif self.output_schema == "minimal":
+            prompt = (
+                "Warm up the high-level robot planner. Return "
+                '{"next_subtask":"warmup"}.'
+            )
+        elif self.output_schema == "next_subtask":
             prompt = (
                 "Warm up the high-level robot planner. Return "
                 '{"next_subtask":"warmup"}.'
@@ -570,7 +594,7 @@ class Qwen36VllmBackend:
                 },
             )
 
-        raw_text, request_timing = self._request(
+        raw_text, request_timing, response_schema, final_prompt = self._request(
             images=images,
             prompt=prompt,
             recent_positions=recent_positions,
@@ -581,6 +605,7 @@ class Qwen36VllmBackend:
             raw_text,
             fallback_subtask=phase_prompt,
             default_confidence=0.0,
+            output_schema=output_schema,
         )
         parse_finished = time.perf_counter_ns()
         online_finished = time.perf_counter_ns()
@@ -590,6 +615,9 @@ class Qwen36VllmBackend:
             else "evidence_frame_ids=[]; text_only=true"
         )
         prediction.raw_text = f"{evidence_prefix}\n{prediction.raw_text}"
+        prediction.response_schema = response_schema
+        prediction.final_prompt = final_prompt
+        prediction.evidence_frame_ids = list(image_frame_ids)
         prediction.timing_ms.update(
             {
                 "select_images": self._elapsed_ms(select_started, select_finished),

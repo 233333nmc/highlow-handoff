@@ -201,18 +201,41 @@ def eval(TASK_ENV, model: HyVLAPolicyWrapper, observation: dict[str, Any]) -> No
         return
 
     action_started = time.perf_counter()
+    action_started_ns = time.perf_counter_ns()
     action = model.get_action(batch)
     action_finished = time.perf_counter()
+    action_finished_ns = time.perf_counter_ns()
     pending_handoff = getattr(model, "pending_instruction_handoff", None)
     if pending_handoff is not None:
         ready_ns = int(pending_handoff["instruction_ready_ns"])
-        first_action_ms = (time.perf_counter_ns() - ready_ns) / 1_000_000.0
+        ready_to_start_ms = (action_started_ns - ready_ns) / 1_000_000.0
+        action_call_ms = (action_finished_ns - action_started_ns) / 1_000_000.0
+        first_action_ms = (action_finished_ns - ready_ns) / 1_000_000.0
+        pending_handoff["decision"].timing_ms[
+            "instruction_ready_to_low_level_start"
+        ] = ready_to_start_ms
         pending_handoff["decision"].timing_ms["instruction_ready_to_first_action"] = (
             first_action_ms
         )
         pending_handoff["decision"].timing_ms["instruction_ready_first_action_forward"] = (
-            (action_finished - action_started) * 1000.0
+            action_call_ms
         )
+        pending_handoff["decision"].timing_ms["low_level_resume_action_call"] = (
+            action_call_ms
+        )
+        pending_handoff["decision"].timing_ms["low_level_resume_model_forward"] = (
+            float(getattr(model, "last_model_forward_ms", 0.0))
+        )
+        pending_handoff["decision"].timing_ms["low_level_resume_used_action_cache"] = (
+            1.0 if bool(getattr(model, "last_action_used_cache", False)) else 0.0
+        )
+        boundary_to_ready = pending_handoff["decision"].timing_ms.get(
+            "boundary_to_instruction_ready"
+        )
+        if boundary_to_ready is not None:
+            pending_handoff["decision"].timing_ms["boundary_to_first_action"] = (
+                float(boundary_to_ready) + first_action_ms
+            )
         _append_high_level_log(
             model,
             int(pending_handoff["frame_id"]),
@@ -276,6 +299,7 @@ def reset_model(model: HyVLAPolicyWrapper) -> str:
         model.hierarchical_oracle_phase_index = -1
         model.hierarchical_oracle_handoff_fired = False
         model.hierarchical_handoff_fired = False
+        model.hierarchical_decision_handoff_logged = False
         model.hierarchical_first_action_after_handoff_logged = False
         model.hierarchical_handoff_pause_remaining_steps = 0
     return message
@@ -599,6 +623,7 @@ def _maybe_attach_hierarchical_controller(
     model.hierarchical_oracle_phase_index = -1
     model.hierarchical_oracle_handoff_fired = False
     model.hierarchical_handoff_fired = False
+    model.hierarchical_decision_handoff_logged = False
     model.hierarchical_first_action_after_handoff_logged = False
     model.hierarchical_handoff_pause_steps = max(
         0,
@@ -617,6 +642,9 @@ def _maybe_attach_hierarchical_controller(
     )
     model.hierarchical_stop_after_measurement_handoff = _as_bool(
         usr_args.get("hierarchical_stop_after_measurement_handoff", False)
+    )
+    model.hierarchical_stop_after_decision_handoff = _as_bool(
+        usr_args.get("hierarchical_stop_after_decision_handoff", False)
     )
     model.hierarchical_episode_index = None
     log_path = usr_args.get("hierarchical_log_path")
@@ -931,14 +959,15 @@ def _publish_high_level_decision(
         1.0 if not should_refresh_low_level else 0.0
     )
     model.high_level_current_instruction = next_instruction
-    if should_refresh_low_level:
+    if decision.trigger != "initial" or should_refresh_low_level:
         model.pending_instruction_handoff = {
             "decision": decision,
             "frame_id": frame_id,
             "timestamp_s": timestamp_s,
             "instruction_ready_ns": update_finished,
         }
-        _arm_handoff_pause(model, decision)
+        if should_refresh_low_level:
+            _arm_handoff_pause(model, decision)
     model.high_level_decisions.append(
         {
             "frame_id": frame_id,
@@ -947,6 +976,8 @@ def _publish_high_level_decision(
         }
     )
     _append_high_level_log(model, frame_id, timestamp_s, decision)
+    if decision.trigger != "initial":
+        model.hierarchical_decision_handoff_logged = True
     if should_refresh_low_level:
         model.hierarchical_handoff_fired = True
         _maybe_start_prefetch_next_planner(
@@ -1060,14 +1091,18 @@ def _resolve_instruction(
     controller = getattr(model, "high_level_controller", None)
     if controller is None:
         return _apply_low_level_instruction_override(model, original_instruction)
+    if hasattr(controller, "set_episode_instruction"):
+        controller.set_episode_instruction(original_instruction)
 
     should_update_now = bool(
         getattr(controller, "should_update", lambda _timestamp_s: True)(
             timestamp_s
         )
     )
+    visual_context_mode = str(getattr(controller, "visual_context_mode", "recent"))
     force_decision_visual = bool(
         getattr(model, "hierarchical_force_visual_on_decision", False)
+        or visual_context_mode in {"unseen", "unseen_memory"}
     ) and bool(should_update_now)
     camera_images: dict[str, Any] = {}
     if controller.should_capture_visual(timestamp_s) or force_decision_visual:

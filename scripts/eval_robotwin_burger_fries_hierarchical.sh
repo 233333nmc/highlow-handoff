@@ -30,6 +30,7 @@ HANDOFF_PAUSE_STEPS=${HANDOFF_PAUSE_STEPS:-0}
 STOP_AFTER_ORACLE_HANDOFF=${STOP_AFTER_ORACLE_HANDOFF:-False}
 CALIBRATION_MAX_SIM_TIME_S=${CALIBRATION_MAX_SIM_TIME_S:-0.0}
 STOP_AFTER_MEASUREMENT_HANDOFF=${STOP_AFTER_MEASUREMENT_HANDOFF:-False}
+STOP_AFTER_DECISION_HANDOFF=${STOP_AFTER_DECISION_HANDOFF:-False}
 INSTRUCTION_MODE=${INSTRUCTION_MODE:-subtask}
 HL_BACKEND=${HL_BACKEND:-scripted}
 HL_PROMPT_MODE=${HL_PROMPT_MODE:-legacy}
@@ -41,6 +42,8 @@ HL_ASYNC_DROP_STALE_S=${HL_ASYNC_DROP_STALE_S:-0.0}
 HL_FORCE_VISUAL_ON_DECISION=${HL_FORCE_VISUAL_ON_DECISION:-False}
 HL_VISUAL_CONTEXT_MODE=${HL_VISUAL_CONTEXT_MODE:-recent}
 HL_RECENT_FRAMES_LENGTH=${HL_RECENT_FRAMES_LENGTH:-8}
+HL_HISTORY_FPS=${HL_HISTORY_FPS:-1.0}
+HL_SOURCE_FPS=${HL_SOURCE_FPS:-25.0}
 HL_VLM_MAX_IMAGES=${HL_VLM_MAX_IMAGES:-8}
 HL_VLM_MAX_NEW_TOKENS=${HL_VLM_MAX_NEW_TOKENS:-160}
 QWEN_MODEL_PATH=${QWEN_MODEL_PATH:-"${WORK_ROOT}/checkpoints/Qwen2.5-VL-32B-Instruct"}
@@ -127,6 +130,7 @@ echo "Handoff pause      : ${HANDOFF_PAUSE_STEPS} sim steps"
 echo "Stop after oracle  : ${STOP_AFTER_ORACLE_HANDOFF}"
 echo "Calibration limit  : ${CALIBRATION_MAX_SIM_TIME_S}s"
 echo "Stop after measure : ${STOP_AFTER_MEASUREMENT_HANDOFF}"
+echo "Stop after decision: ${STOP_AFTER_DECISION_HANDOFF}"
 echo "Instruction mode   : ${INSTRUCTION_MODE}"
 echo "High-level backend : ${HL_BACKEND}"
 echo "Prompt mode        : ${HL_PROMPT_MODE}"
@@ -139,6 +143,7 @@ echo "Async high-level   : ${HL_ASYNC_ENABLED}, drop_stale=${HL_ASYNC_DROP_STALE
 echo "Force decision img : ${HL_FORCE_VISUAL_ON_DECISION}"
 echo "Visual context     : ${HL_VISUAL_CONTEXT_MODE}"
 echo "Recent frame window: ${HL_RECENT_FRAMES_LENGTH}"
+echo "History sampling   : ${HL_HISTORY_FPS} FPS from source ${HL_SOURCE_FPS} FPS"
 if [[ "${HL_BACKEND}" == "qwen25_vl" ]]; then
   echo "Qwen checkpoint    : ${QWEN_MODEL_PATH}"
   echo "Qwen device        : ${QWEN_DEVICE}"
@@ -191,6 +196,7 @@ fi
       --hierarchical_stop_after_oracle_handoff "${STOP_AFTER_ORACLE_HANDOFF}" \
       --hierarchical_calibration_max_sim_time_s "${CALIBRATION_MAX_SIM_TIME_S}" \
       --hierarchical_stop_after_measurement_handoff "${STOP_AFTER_MEASUREMENT_HANDOFF}" \
+      --hierarchical_stop_after_decision_handoff "${STOP_AFTER_DECISION_HANDOFF}" \
       --hierarchical_forced_boundary_s "${FORCED_BOUNDARY_S}" \
       --hierarchical_max_forced_boundaries "${MAX_FORCED_BOUNDARIES}" \
       --hierarchical_backend "${HL_BACKEND}" \
@@ -224,8 +230,8 @@ fi
       --hierarchical_gemma4_image_selection "${GEMMA4_IMAGE_SELECTION}" \
       --hierarchical_gemma4_image_max_side "${GEMMA4_IMAGE_MAX_SIDE}" \
       --hierarchical_gemma4_output_schema "${GEMMA4_OUTPUT_SCHEMA}" \
-      --hierarchical_history_fps 1.0 \
-      --hierarchical_source_fps 25.0 \
+      --hierarchical_history_fps "${HL_HISTORY_FPS}" \
+      --hierarchical_source_fps "${HL_SOURCE_FPS}" \
       --hierarchical_recent_frames_length "${HL_RECENT_FRAMES_LENGTH}" \
       --hierarchical_memory_length 8 \
       --hierarchical_log_path "${HL_LOG_PATH}" \

@@ -166,7 +166,7 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
         self.assertEqual("Place the hamburg on the tray.", instruction)
         self.assertEqual(0, model.cache_invalidations)
         self.assertFalse(model.hierarchical_handoff_fired)
-        self.assertIsNone(model.pending_instruction_handoff)
+        self.assertIsNotNone(model.pending_instruction_handoff)
         self.assertEqual(1, len(model.high_level_decisions))
         self.assertEqual(
             0.0,
@@ -456,10 +456,7 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
             nonlocal backend_calls
             backend_calls += 1
             self.assertIsNotNone(kwargs["execution_report"])
-            return (
-                '{"decision":"switch","status":"completed",'
-                '"next_subtask":"","evidence":"burger is on tray"}'
-            )
+            return '{"completed":true}'
 
         controller = BurgerFriesHighLevelController(
             forced_boundary_s=1.0,
@@ -505,7 +502,7 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
         self.assertEqual("switch", boundary.planner_action)
         self.assertEqual("completed", boundary.subtask_status)
         self.assertEqual("completed", boundary.high_level_status)
-        self.assertEqual("burger is on tray", boundary.evidence)
+        self.assertEqual("", boundary.evidence)
         self.assertEqual("profile_all", boundary.planner_mode)
         self.assertEqual("profile_all", boundary.planner_candidate_source)
         self.assertEqual(
@@ -517,8 +514,8 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
             boundary.next_subtask,
         )
         self.assertNotIn("Suggested next subtask", boundary.prompt)
-        self.assertIn("decision='switch'", boundary.prompt)
-        self.assertIn("status='stuck'", boundary.prompt)
+        self.assertIn("completed=true", boundary.prompt)
+        self.assertNotIn("status=", boundary.prompt)
 
     def test_vlm_plan_all_generates_subtasks_with_repeated_next_prompts(self) -> None:
         calls: list[str | None] = []
@@ -529,10 +526,7 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
                 return '{"next_subtask":"Move the burger onto the tray."}'
             if len(calls) == 2:
                 return '{"next_subtask":"Move the fries onto the tray."}'
-            return (
-                '{"decision":"switch","status":"completed",'
-                '"next_subtask":"","evidence":"burger is placed"}'
-            )
+            return '{"completed":true}'
 
         controller = BurgerFriesHighLevelController(
             forced_boundary_s=1.0,
@@ -568,7 +562,7 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
                 used_action_cache=False,
             )
 
-        self.assertEqual(["minimal", "minimal", "completion_status"], calls)
+        self.assertEqual(["minimal", "minimal", "completion_bool"], calls)
         self.assertEqual(2, len(decisions))
         initial, boundary = decisions
         self.assertEqual("Move the burger onto the tray.", initial.next_subtask)
@@ -577,7 +571,7 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
         self.assertIn("backend_plan_all_step_1_predict", initial.timing_ms)
         self.assertEqual("Move the fries onto the tray.", boundary.next_subtask)
         self.assertEqual("vlm_plan_all_cache", boundary.planner_candidate_source)
-        self.assertEqual("completion_status", boundary.output_schema)
+        self.assertEqual("completion_bool", boundary.output_schema)
 
     def test_vlm_plan_next_calls_model_after_completed_verifier(self) -> None:
         calls: list[str | None] = []
@@ -586,11 +580,8 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
             calls.append(kwargs.get("output_schema"))
             if len(calls) == 1:
                 return '{"next_subtask":"Move the burger onto the tray."}'
-            if kwargs.get("output_schema") == "completion_status":
-                return (
-                    '{"decision":"switch","status":"completed",'
-                    '"next_subtask":"","evidence":"burger is placed"}'
-                )
+            if kwargs.get("output_schema") == "completion_bool":
+                return '{"completed":true}'
             return '{"next_subtask":"Move the fries onto the tray."}'
 
         controller = BurgerFriesHighLevelController(
@@ -627,7 +618,7 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
                 used_action_cache=False,
             )
 
-        self.assertEqual(["minimal", "completion_status", "minimal"], calls)
+        self.assertEqual(["next_subtask", "completion_bool", "next_subtask"], calls)
         self.assertEqual(2, len(decisions))
         initial, boundary = decisions
         self.assertEqual("Move the burger onto the tray.", initial.next_subtask)
@@ -651,12 +642,9 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
             )
             if len(calls) == 1:
                 return '{"next_subtask":"Move the burger onto the tray."}'
-            if "Current published low-level subtask" in prompt:
+            if "Generate the next object-level robot subtask" in prompt:
                 return '{"next_subtask":"Move the fries onto the tray."}'
-            return (
-                '{"decision":"switch","status":"completed",'
-                '"next_subtask":"","evidence":"burger is placed"}'
-            )
+            return '{"completed":true}'
 
         controller = BurgerFriesHighLevelController(
             forced_boundary_s=1.0,
@@ -719,7 +707,7 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
             )
 
         self.assertEqual(
-            ["minimal", "minimal", "completion_status"],
+            ["next_subtask", "next_subtask", "completion_bool"],
             [call[0] for call in calls],
         )
         self.assertTrue(calls[1][1])
@@ -780,7 +768,64 @@ class ForcedBoundaryControllerTest(unittest.TestCase):
         self.assertEqual([[0], [25, 50]], seen_recent_frame_ids)
         self.assertEqual(2, len(decisions))
         self.assertEqual([25, 50], decisions[1].context_frames)
-        self.assertEqual("unseen", decisions[1].visual_context_mode)
+        self.assertEqual("unseen_memory", decisions[1].visual_context_mode)
+
+    def test_next_planner_unseen_context_keeps_frames_until_verifier(self) -> None:
+        seen_recent_frame_ids: list[list[int]] = []
+
+        def generate_fn(**kwargs: object) -> str:
+            recent_frames = kwargs["recent_frames"]
+            assert isinstance(recent_frames, list)
+            seen_recent_frame_ids.append(
+                [int(frame.frame_id) for frame in recent_frames]
+            )
+            if len(seen_recent_frame_ids) == 1:
+                return '{"next_subtask":"Place the hamburg on the tray."}'
+            if len(seen_recent_frame_ids) == 2:
+                return '{"completed":true}'
+            return '{"next_subtask":"Place the french fries on the tray."}'
+
+        controller = BurgerFriesHighLevelController(
+            forced_boundary_s=2.17,
+            max_forced_boundaries=1,
+            history_fps=0.5,
+            source_fps=25.0,
+            prompt_mode="completion_status",
+            planner_mode="vlm_plan_next",
+            visual_context_mode="unseen_memory",
+            backend=JsonTextHighLevelBackend(generate_fn),
+        )
+        decisions = []
+        for frame_id in range(56):
+            timestamp_s = frame_id / 25.0
+            controller.observe(
+                FrameRecord(
+                    frame_id=frame_id,
+                    timestamp_s=timestamp_s,
+                    camera_images={"head_camera": object()}
+                    if frame_id in {0, 50, 55}
+                    else {},
+                )
+            )
+            decision = controller.step(timestamp_s=timestamp_s, frame_id=frame_id)
+            if decision is not None:
+                decisions.append(decision)
+            controller.record_low_level_step(
+                frame_id=frame_id,
+                timestamp_s=timestamp_s,
+                state=[timestamp_s, 0.0, 0.0, 0.0],
+                action=[0.01, 0.0, 0.0, 0.0],
+                low_level_call_ms=1.0,
+                model_forward_ms=2.0,
+                used_action_cache=False,
+            )
+
+        self.assertEqual([[], [0, 50, 55], []], seen_recent_frame_ids)
+        self.assertEqual(2, len(decisions))
+        self.assertEqual([0, 50, 55], decisions[1].context_frames)
+        self.assertEqual("verifier", decisions[1].request_kind)
+        self.assertEqual("vlm_plan_next", decisions[1].planner_mode)
+        self.assertEqual("unseen_memory", decisions[1].visual_context_mode)
 
 
 if __name__ == "__main__":

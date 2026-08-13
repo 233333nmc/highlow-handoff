@@ -52,19 +52,28 @@ Control behavior:
 
 ### 2.3 Visual Context
 
-The default forced-boundary verifier configuration uses one current head-camera image:
+The default Gemma4 forced-boundary verifier configuration uses
+`unseen_memory` visual context:
 
 ```text
 HL_FORCE_VISUAL_ON_DECISION=True
-HL_RECENT_FRAMES_LENGTH=1
-HL_VLM_MAX_IMAGES=1
-HL_VISUAL_CONTEXT_MODE=recent
+HL_HISTORY_FPS=1.0
+HL_VLM_MAX_IMAGES=8
+HL_VISUAL_CONTEXT_MODE=unseen_memory
+GEMMA4_IMAGE_SELECTION=tail
 ```
 
-The code also supports multi-frame inputs:
+In this mode, the controller stores one low-frequency head-camera frame every
+1 second. At a handoff boundary, the verifier receives all buffered frames
+that have not yet been sent to the high-level model plus the current boundary
+observation. After the verifier call, the image payloads for those frames are
+discarded from the buffer.
+
+The code also supports other visual-context settings:
 
 - `HL_RECENT_FRAMES_LENGTH>1`: use the tail of recent visual frames.
-- `HL_VISUAL_CONTEXT_MODE=unseen`: use accumulated visual frames that have not yet been consumed by the high-level model.
+- `HL_VISUAL_CONTEXT_MODE=recent`: use the sampled recent visual frames.
+- `HL_VISUAL_CONTEXT_MODE=unseen_memory`: use accumulated unseen visual frames.
 
 The latest code forces the current boundary frame into verifier requests, so a fixed-boundary check does not accidentally reuse the previous periodic frame.
 
@@ -590,7 +599,7 @@ bash scripts/eval_robotwin_multitask_gemma4_12b_status_n10.sh
 
 - Consolidate action-cache statistics for the latest `next/all`, fixed-boundary, and `stack_blocks_three` experiments.
 - Improve verifier completion criteria, especially the `stack_blocks_three` single-frame false negatives.
-- Test multi-frame verifier settings such as `HL_RECENT_FRAMES_LENGTH=3` or `HL_VISUAL_CONTEXT_MODE=unseen`.
+- Test multi-frame verifier settings such as `HL_RECENT_FRAMES_LENGTH=3` or `HL_VISUAL_CONTEXT_MODE=unseen_memory`.
 - Continue tuning planner prompts so the model outputs object-level, executable-order subtasks instead of overly fine-grained or dependency-invalid instructions.
 - Build a formal demo package with rollout video, high-level prompt / response, low-level instruction trace, and action-cache switch records.
 

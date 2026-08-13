@@ -121,6 +121,13 @@ class HighLevelDecision:
     verifier_next_subtask: str = ""
     evidence: str = ""
     visual_context_mode: str = "recent"
+    response_schema: str = ""
+    final_prompt: str = ""
+    evidence_frame_ids: list[int] = field(default_factory=list)
+    verifier_raw_prediction: str = ""
+    next_planner_prompt: str = ""
+    next_planner_final_prompt: str = ""
+    next_planner_raw_prediction: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -151,6 +158,13 @@ class HighLevelDecision:
             "verifier_next_subtask": self.verifier_next_subtask,
             "evidence": self.evidence,
             "visual_context_mode": self.visual_context_mode,
+            "response_schema": self.response_schema,
+            "final_prompt": self.final_prompt,
+            "evidence_frame_ids": list(self.evidence_frame_ids),
+            "verifier_raw_prediction": self.verifier_raw_prediction,
+            "next_planner_prompt": self.next_planner_prompt,
+            "next_planner_final_prompt": self.next_planner_final_prompt,
+            "next_planner_raw_prediction": self.next_planner_raw_prediction,
         }
 
 
@@ -174,6 +188,13 @@ class HighLevelPrediction:
     high_level_status: str = "unknown"
     verifier_next_subtask: str = ""
     evidence: str = ""
+    response_schema: str = ""
+    final_prompt: str = ""
+    evidence_frame_ids: list[int] = field(default_factory=list)
+    verifier_raw_prediction: str = ""
+    next_planner_prompt: str = ""
+    next_planner_final_prompt: str = ""
+    next_planner_raw_prediction: str = ""
 
 
 @dataclass(slots=True)
@@ -254,6 +275,7 @@ def parse_high_level_prediction_text(
     *,
     fallback_subtask: str,
     default_confidence: float = 0.5,
+    output_schema: str | None = None,
 ) -> HighLevelPrediction:
     """Parse a high-level JSON prediction.
 
@@ -282,8 +304,7 @@ def parse_high_level_prediction_text(
 
     {
       "decision": "same" | "switch",
-      "status": "running" | "completed" | "failed" | "stuck" | "uncertain",
-      "next_subtask": "",
+      "completed": true | false,
       "evidence": "short visual evidence"
     }
 
@@ -298,6 +319,14 @@ def parse_high_level_prediction_text(
     raw_text = text
     try:
         payload = json.loads(_extract_json_object(text))
+        if output_schema == "completion_bool":
+            if set(payload) != {"completed"} or not isinstance(
+                payload.get("completed"), bool
+            ):
+                raise ValueError(
+                    "completion_bool requires exactly one boolean field: completed"
+                )
+
         def _clean_str(value: Any) -> str:
             if value is None:
                 return ""
@@ -320,9 +349,15 @@ def parse_high_level_prediction_text(
             or (subtasks[0] if subtasks else "")
             or fallback_subtask
         )
-        raw_status = _clean_str(
-            payload.get("status") or payload.get("subtask_status") or "unknown"
-        ).lower()
+        completed_value = payload.get("completed")
+        if isinstance(completed_value, bool):
+            raw_status = "completed" if completed_value else "unfinished"
+        else:
+            raw_status = _clean_str(
+                payload.get("status")
+                or payload.get("subtask_status")
+                or "unknown"
+            ).lower()
         if raw_status in {"running", "unfinished", "in_progress"}:
             high_level_status = "running"
             subtask_status = "unfinished"
@@ -427,6 +462,7 @@ class JsonTextHighLevelBackend:
             raw,
             fallback_subtask=phase_prompt,
             default_confidence=self.default_confidence,
+            output_schema=output_schema,
         )
 
 
@@ -516,6 +552,14 @@ class FrameBuffer:
 
     def all(self) -> list[FrameRecord]:
         return list(self._frames)
+
+    def discard_visual_payloads_through(self, frame_id: int) -> None:
+        """Drop image arrays that have already been sent to high-level."""
+
+        cutoff = int(frame_id)
+        for frame in self._frames:
+            if int(frame.frame_id) <= cutoff and frame.camera_images:
+                frame.camera_images.clear()
 
     def recent(self, max_frames: int) -> list[FrameRecord]:
         if max_frames <= 0:
@@ -621,9 +665,10 @@ class BurgerFriesHighLevelController:
             raise ValueError("phase_names and phase_prompts must have the same length")
 
         self.task_name = str(task_name)
-        self.task_instruction = task_instruction or (
+        self.default_task_instruction = task_instruction or (
             "Use dual arm to pick the hamburg and frenchfries and put them onto the tray."
         )
+        self.task_instruction = self.default_task_instruction
         self.forced_boundary_s = max(0.1, float(forced_boundary_s))
         self.max_forced_boundaries = max(0, int(max_forced_boundaries))
         self.enable_forced_boundaries = bool(enable_forced_boundaries)
@@ -657,10 +702,19 @@ class BurgerFriesHighLevelController:
                 "'vlm_plan_next', 'profile_all', or 'lazy_profile', "
                 f"got {planner_mode!r}"
             )
-        self.visual_context_mode = str(visual_context_mode).strip().lower()
-        if self.visual_context_mode not in {"recent", "unseen"}:
+        raw_visual_context_mode = str(visual_context_mode).strip().lower()
+        visual_context_aliases = {
+            "unseen": "unseen_memory",
+            "unseen_memory": "unseen_memory",
+            "recent": "recent",
+        }
+        self.visual_context_mode = visual_context_aliases.get(
+            raw_visual_context_mode,
+            raw_visual_context_mode,
+        )
+        if self.visual_context_mode not in {"recent", "unseen_memory"}:
             raise ValueError(
-                "visual_context_mode must be 'recent' or 'unseen', "
+                "visual_context_mode must be 'recent' or 'unseen_memory', "
                 f"got {visual_context_mode!r}"
             )
         self.include_phase_profile_hints = bool(include_phase_profile_hints)
@@ -679,12 +733,12 @@ class BurgerFriesHighLevelController:
         self._active_start_frame_id: int | None = None
         self._forced_boundary_count = 0
         self._last_visual_capture_s = float("-inf")
-        self._last_consumed_visual_frame_id: int | None = None
         self._reset_execution_accumulator()
 
     def reset(self) -> None:
         self.buffer.clear()
         self.memory_text = ""
+        self.task_instruction = self.default_task_instruction
         self._planner_plan_cache = (
             self.phase_prompts if self.planner_mode == "profile_all" else ()
         )
@@ -696,8 +750,14 @@ class BurgerFriesHighLevelController:
         self._active_start_frame_id = None
         self._forced_boundary_count = 0
         self._last_visual_capture_s = float("-inf")
-        self._last_consumed_visual_frame_id = None
         self._reset_execution_accumulator()
+
+    def set_episode_instruction(self, instruction: str) -> None:
+        """Use the concrete RoboTwin episode instruction in high-level prompts."""
+
+        normalized = str(instruction).strip()
+        if normalized:
+            self.task_instruction = normalized
 
     def observe(self, frame: FrameRecord) -> None:
         self.buffer.append(frame)
@@ -869,32 +929,18 @@ class BurgerFriesHighLevelController:
         return visual_samples or sampled
 
     def _unseen_visual_context(self) -> list[FrameRecord]:
-        """Return visual frames not included in a prior high-level request."""
+        """Return visual frames that still have unsent image payloads."""
 
-        last_seen = self._last_consumed_visual_frame_id
-        frames = [
-            frame
-            for frame in self.buffer.all()
-            if frame.camera_images
-            and (last_seen is None or int(frame.frame_id) > int(last_seen))
-        ]
-        if frames:
-            return frames
-        # Avoid an empty VLM request when the scheduler fires before a new
-        # periodic capture. Reusing the latest visual frame is explicit in the
-        # logged context, and the consumption cursor is not advanced unless a
-        # frame is actually present.
-        visual_frames = [frame for frame in self.buffer.all() if frame.camera_images]
-        return visual_frames[-1:] if visual_frames else []
+        return [frame for frame in self.buffer.all() if frame.camera_images]
 
-    def _mark_visual_context_consumed(self, frames: Sequence[FrameRecord]) -> None:
+    def _discard_visual_context(self, frames: Sequence[FrameRecord]) -> None:
         visual_frame_ids = [
             int(frame.frame_id)
             for frame in frames
             if frame.camera_images
         ]
         if visual_frame_ids:
-            self._last_consumed_visual_frame_id = max(visual_frame_ids)
+            self.buffer.discard_visual_payloads_through(max(visual_frame_ids))
 
     def _build_execution_report(
         self,
@@ -1112,6 +1158,12 @@ class BurgerFriesHighLevelController:
         )
         if not self.include_phase_profile_hints:
             return contract
+        if self.task_name == "put_bottles_dustbin":
+            return (
+                f"{contract}"
+                "Do not copy a generic task-profile example. Derive the bottle "
+                "identity from the concrete task instruction above.\n"
+            )
         examples = "\n".join(
             f"{index}. {prompt}"
             for index, prompt in enumerate(self.phase_prompts)
@@ -1121,6 +1173,18 @@ class BurgerFriesHighLevelController:
     def _phase_target_hint(self, phase_index: int) -> str:
         if not self.include_phase_profile_hints:
             return ""
+        if self.task_name == "put_bottles_dustbin":
+            if int(phase_index) <= 0:
+                return (
+                    "Requested phase-level target: put the first bottle named "
+                    "in the task instruction into the dustbin, using that exact "
+                    "visual descriptor.\n"
+                )
+            return (
+                "Requested phase-level target: put the remaining bottles named "
+                "in the task instruction into the dustbin, using their exact "
+                "visual descriptors.\n"
+            )
         return (
             "Requested phase-level target: "
             f"{self._profile_subtask_for_phase(phase_index)}\n"
@@ -1141,33 +1205,25 @@ class BurgerFriesHighLevelController:
         execution_report: ExecutionReport | None,
         previous_subtask: str | None = None,
     ) -> str:
+        del execution_report
         if previous_subtask:
-            progress_desc = (
-                "This is upfront planning. The previous subtask was generated "
-                "by the planner but has not necessarily been executed yet."
+            return (
+                "Generate the next object-level robot subtask.\n"
+                f"Task: {self.task_instruction}\n"
+                f"Current subtask: {previous_subtask}\n"
+                f"Next subtask index: {phase_index + 1}\n"
+                "The new subtask must name the object and its final target.\n"
+                "Do not repeat the current subtask. Do not verify completion.\n"
+                "Do not output a grasp-only, lift-only, move-only, or "
+                "release-only step."
             )
-            current_subtask = previous_subtask
-        elif execution_report is None:
-            progress_desc = "No subtask has been executed yet."
-            current_subtask = "none yet"
-        else:
-            report = execution_report.to_dict()
-            progress_desc = (
-                f"The verifier accepted this completed subtask: "
-                f"{report['subtask']}"
-            )
-            current_subtask = self._active_subtask or report["subtask"]
         return (
-            "You are the high-level planner for a RoboTwin robot manipulation "
-            "task.\n"
-            f"Task instruction: {self.task_instruction}\n"
-            f"{self._phase_granularity_contract()}"
-            f"Previously active subtask: {current_subtask}\n"
-            f"Progress summary: {progress_desc}\n"
-            f"Next subtask index: {phase_index}\n"
-            f"{self._phase_target_hint(phase_index)}"
-            "Generate exactly one low-level subtask instruction that should be "
-            f"sent to Hy-VLA next. {self._planner_granularity_instruction()}"
+            "Generate one object-level robot subtask.\n"
+            f"Task: {self.task_instruction}\n"
+            f"Subtask index: {phase_index + 1}\n"
+            "The subtask must name the object and its final target.\n"
+            "Do not output a grasp-only, lift-only, move-only, or "
+            "release-only step."
         )
 
     def _build_vlm_prefetch_next_prompt(self, *, phase_index: int) -> str:
@@ -1175,18 +1231,14 @@ class BurgerFriesHighLevelController:
             self._active_phase_index
         )
         return (
-            "You are the high-level planner for a RoboTwin robot manipulation "
-            "task.\n"
-            f"Task instruction: {self.task_instruction}\n"
-            f"{self._phase_granularity_contract()}"
-            f"Current published low-level subtask: {current_subtask}\n"
-            f"Current subtask index: {self._active_phase_index}\n"
-            f"Next subtask index to prepare: {phase_index}\n"
-            f"{self._phase_target_hint(phase_index)}"
-            "The current subtask has just been sent to the low-level policy and "
-            "may still be executing. Prepare exactly one likely next low-level "
-            "subtask instruction for Hy-VLA. Do not verify completion. "
-            f"{self._planner_granularity_instruction()}"
+            "Generate the next object-level robot subtask.\n"
+            f"Task: {self.task_instruction}\n"
+            f"Current subtask: {current_subtask}\n"
+            f"Next subtask index: {phase_index + 1}\n"
+            "The new subtask must name the object and its final target.\n"
+            "Do not repeat the current subtask. Do not verify completion.\n"
+            "Do not output a grasp-only, lift-only, move-only, or "
+            "release-only step."
         )
 
     def _build_vlm_plan_all_next_prompt(
@@ -1227,7 +1279,7 @@ class BurgerFriesHighLevelController:
             visual_desc = "no current camera frame"
         elif len(recent) == 1:
             visual_desc = "one current head-camera frame"
-        elif self.visual_context_mode == "unseen":
+        elif self.visual_context_mode == "unseen_memory":
             frame_ids = ", ".join(str(frame.frame_id) for frame in recent)
             visual_desc = (
                 f"{len(recent)} accumulated head-camera frames not previously "
@@ -1237,34 +1289,12 @@ class BurgerFriesHighLevelController:
             visual_desc = f"{len(recent)} recent head-camera frames"
         del timestamp_s, execution_report
         return (
-            "You are a completion verifier for a RoboTwin robot manipulation "
-            "subtask.\n"
-            f"Task instruction: {self.task_instruction}\n"
-            f"Current low-level subtask: {current_subtask}\n"
-            f"Visual evidence: {visual_desc}\n"
-            "Decide whether the current low-level subtask is already completed "
-            "in the provided visual evidence.\n"
-            "Judge the visible goal state of the current subtask, not whether the "
-            "robot is still actively executing that subtask. If the goal state is "
-            "already achieved and the robot has moved on to another object or "
-            "motion, return decision='switch' and status='completed'.\n"
-            "Use decision='same' when the robot should keep executing the current "
-            "subtask. Use decision='switch' only when the provided image(s) show "
-            "the current subtask is completed.\n"
-            "Use status='running' for normal unfinished execution, "
-            "status='completed' for completed execution, status='failed' for a "
-            "clear failure, status='stuck' for no-progress/stalled execution, "
-            "and status='uncertain' when the image is insufficient.\n"
-            "Keep next_subtask as an empty string unless you have a direct "
-            "suggestion. The separate planner may own next-subtask generation.\n"
-            "Write evidence as one short visual reason.\n"
-            "Return exactly one JSON object and no markdown or bullet list:\n"
-            "{"
-            '"decision":"same|switch",'
-            '"status":"running|completed|failed|stuck|uncertain",'
-            '"next_subtask":"",'
-            '"evidence":"short visual reason"'
-            "}"
+            "Verify whether the current robot subtask is completed.\n"
+            f"Task: {self.task_instruction}\n"
+            f"Current subtask: {current_subtask}\n"
+            f"Images: {visual_desc}\n"
+            "Use completed=true only when the subtask's final goal state is "
+            "clearly visible. Otherwise use completed=false."
         )
 
     def begin_step(
@@ -1297,7 +1327,7 @@ class BurgerFriesHighLevelController:
             allow_text_only = True
         elif initial and self.planner_mode == "vlm_plan_next":
             request_kind = "planner_next"
-            output_schema = "minimal"
+            output_schema = "next_subtask"
             allow_text_only = True
         elif (
             not initial
@@ -1312,12 +1342,17 @@ class BurgerFriesHighLevelController:
             )
         ):
             request_kind = "verifier"
-            output_schema = "completion_status"
+            output_schema = "completion_bool"
             allow_text_only = False
         else:
             request_kind = "legacy"
             output_schema = self.prompt_mode
             allow_text_only = False
+        uses_visual_context = not (
+            initial
+            and self.planner_mode
+            in {"vlm_plan_all", "vlm_plan_next", "profile_all", "lazy_profile"}
+        )
         planner_candidate, planner_candidate_source = self._planner_candidate_for_phase(
             phase_index
         )
@@ -1347,7 +1382,9 @@ class BurgerFriesHighLevelController:
                 status=report_status,
             )
         )
-        if self.visual_context_mode == "unseen":
+        if not uses_visual_context:
+            recent = []
+        elif self.visual_context_mode == "unseen_memory":
             recent = self._unseen_visual_context()
         else:
             recent = sampled_history[-self.recent_frames_length :]
@@ -1385,14 +1422,12 @@ class BurgerFriesHighLevelController:
             allow_text_only=allow_text_only,
             visual_context_mode=self.visual_context_mode,
         )
-        if self.visual_context_mode == "unseen":
-            self._mark_visual_context_consumed(recent)
         return request
 
     def predict_request(self, request: HighLevelRequest) -> HighLevelPrediction:
         """Run the configured backend for a prepared high-level request."""
 
-        return self.backend.predict(
+        prediction = self.backend.predict(
             prompt=request.prompt,
             memory_frames=request.memory_frames,
             recent_frames=request.recent_frames,
@@ -1403,6 +1438,13 @@ class BurgerFriesHighLevelController:
             output_schema=request.output_schema or None,
             allow_text_only=request.allow_text_only,
         )
+        if (
+            request.visual_context_mode == "unseen_memory"
+            and not request.allow_text_only
+            and request.recent_frames
+        ):
+            self._discard_visual_context(request.recent_frames)
+        return prediction
 
     def begin_prefetch_next_request(
         self,
@@ -1456,7 +1498,7 @@ class BurgerFriesHighLevelController:
             planner_candidate_subtask="",
             planner_candidate_source="vlm_plan_next_prefetch_pending",
             request_kind="planner_prefetch_next",
-            output_schema="minimal",
+            output_schema="next_subtask",
             allow_text_only=True,
         )
 
@@ -1641,6 +1683,13 @@ class BurgerFriesHighLevelController:
             verifier_next_subtask=prediction.verifier_next_subtask,
             evidence=prediction.evidence,
             visual_context_mode=request.visual_context_mode,
+            response_schema=prediction.response_schema,
+            final_prompt=prediction.final_prompt,
+            evidence_frame_ids=prediction.evidence_frame_ids,
+            verifier_raw_prediction=prediction.verifier_raw_prediction,
+            next_planner_prompt=prediction.next_planner_prompt,
+            next_planner_final_prompt=prediction.next_planner_final_prompt,
+            next_planner_raw_prediction=prediction.next_planner_raw_prediction,
         )
 
     def finalize_prediction_for_request(
@@ -1667,6 +1716,21 @@ class BurgerFriesHighLevelController:
             if prefetched is not None:
                 return prefetched
             return self._predict_lazy_next_subtask(request, prediction)
+        if (
+            request.request_kind == "verifier"
+            and self.planner_mode == "vlm_plan_next"
+            and self._planner_prefetch is not None
+        ):
+            record = self._planner_prefetch
+            prediction.verifier_raw_prediction = prediction.raw_text
+            prediction.next_planner_prompt = record.request.prompt
+            prediction.next_planner_final_prompt = record.prediction.final_prompt
+            prediction.next_planner_raw_prediction = record.prediction.raw_text
+            for key, value in record.prediction.timing_ms.items():
+                prediction.timing_ms.setdefault(
+                    f"next_planner_prefetch_{key}", float(value)
+                )
+            prediction.timing_ms.setdefault("next_planner_prefetch_available", 1.0)
         return prediction
 
     def _predict_remaining_plan_all(
@@ -1809,6 +1873,13 @@ class BurgerFriesHighLevelController:
             high_level_status=verifier_prediction.high_level_status,
             verifier_next_subtask=verifier_prediction.verifier_next_subtask,
             evidence=verifier_prediction.evidence,
+            response_schema=verifier_prediction.response_schema,
+            final_prompt=verifier_prediction.final_prompt,
+            evidence_frame_ids=verifier_prediction.evidence_frame_ids,
+            verifier_raw_prediction=verifier_prediction.raw_text,
+            next_planner_prompt=record.request.prompt,
+            next_planner_final_prompt=planner_prediction.final_prompt,
+            next_planner_raw_prediction=planner_prediction.raw_text,
         )
 
     def _predict_lazy_next_subtask(
@@ -1831,7 +1902,7 @@ class BurgerFriesHighLevelController:
             phase_index=request.phase_index,
             phase_prompt=request.phase_prompt,
             execution_report=request.execution_report,
-            output_schema="minimal",
+            output_schema="next_subtask",
             allow_text_only=True,
         )
         planner_finished = time.perf_counter()
@@ -1877,6 +1948,13 @@ class BurgerFriesHighLevelController:
             high_level_status=verifier_prediction.high_level_status,
             verifier_next_subtask=verifier_prediction.verifier_next_subtask,
             evidence=verifier_prediction.evidence,
+            response_schema=verifier_prediction.response_schema,
+            final_prompt=verifier_prediction.final_prompt,
+            evidence_frame_ids=verifier_prediction.evidence_frame_ids,
+            verifier_raw_prediction=verifier_prediction.raw_text,
+            next_planner_prompt=planner_prompt,
+            next_planner_final_prompt=planner_prediction.final_prompt,
+            next_planner_raw_prediction=planner_prediction.raw_text,
         )
 
     def step(

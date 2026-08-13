@@ -113,6 +113,23 @@ class _FakeCompletionStatusResponse:
         }
 
 
+class _FakeCompletionBoolResponse:
+    text = ""
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, object]:
+        return {
+            "usage": {
+                "prompt_tokens": 64,
+                "completion_tokens": 4,
+                "total_tokens": 68,
+            },
+            "choices": [{"message": {"content": '{"completed":true}'}}],
+        }
+
+
 class _FakeSubtaskPlanResponse:
     text = ""
 
@@ -160,6 +177,75 @@ class _FakeSession:
 
 
 class Qwen36VllmBackendTest(unittest.TestCase):
+    def test_completion_bool_has_one_schema_and_auditable_final_prompt(self) -> None:
+        backend = Qwen36VllmBackend(
+            server_url="http://127.0.0.1:8001",
+            max_images=1,
+            output_schema="completion_bool",
+            warmup_calls=0,
+        )
+        session = _FakeSession(response=_FakeCompletionBoolResponse())
+        backend.session = session
+        frame = FrameRecord(
+            frame_id=60,
+            timestamp_s=2.4,
+            camera_images={
+                "head_camera": np.zeros((8, 8, 3), dtype=np.uint8),
+            },
+        )
+
+        prediction = backend.predict(
+            prompt="Verify completion.",
+            memory_frames=[],
+            recent_frames=[frame],
+            timestamp_s=2.4,
+            phase_index=1,
+            phase_prompt="Place the fries on the tray.",
+            execution_report=None,
+            output_schema="completion_bool",
+        )
+
+        self.assertEqual("switch", prediction.action)
+        self.assertEqual("completed", prediction.subtask_status)
+        self.assertEqual([60], prediction.evidence_frame_ids)
+        self.assertEqual(1, prediction.final_prompt.count('"completed"'))
+        self.assertNotIn('"status"', prediction.final_prompt)
+        self.assertNotIn('"next_subtask"', prediction.final_prompt)
+        self.assertNotIn('"evidence"', prediction.final_prompt)
+        assert session.payload is not None
+        content = session.payload["messages"][0]["content"]
+        self.assertEqual(prediction.final_prompt, content[1]["text"])
+
+    def test_completion_bool_rejects_old_status_schema(self) -> None:
+        backend = Qwen36VllmBackend(
+            server_url="http://127.0.0.1:8001",
+            max_images=1,
+            output_schema="completion_bool",
+            warmup_calls=0,
+        )
+        backend.session = _FakeSession(response=_FakeCompletionStatusResponse())
+        frame = FrameRecord(
+            frame_id=60,
+            timestamp_s=2.4,
+            camera_images={
+                "head_camera": np.zeros((8, 8, 3), dtype=np.uint8),
+            },
+        )
+
+        prediction = backend.predict(
+            prompt="Verify completion.",
+            memory_frames=[],
+            recent_frames=[frame],
+            timestamp_s=2.4,
+            phase_index=1,
+            phase_prompt="Place the fries on the tray.",
+            execution_report=None,
+            output_schema="completion_bool",
+        )
+
+        self.assertFalse(prediction.parse_ok)
+        self.assertIn("exactly one boolean field", prediction.parse_error or "")
+
     def test_predict_uses_image_chat_json_and_records_mtp_timing(self) -> None:
         backend = Qwen36VllmBackend(
             server_url="http://127.0.0.1:8001",
