@@ -7,6 +7,7 @@ import argparse
 import html
 import json
 import re
+import shutil
 import statistics
 from pathlib import Path
 from typing import Any
@@ -149,8 +150,19 @@ def render_examples(record: dict[str, Any], out_dir: Path) -> str:
     file_key = run_dir.name
     ep = int(row.get("episode_index", 0))
     video = video_for(Path(row.get("_video_run_dir", run_dir)), ep)
+    video_html = "<p>Rollout video unavailable.</p>"
     images = []
     if video is not None:
+        video_target = out_dir / "assets" / "rollouts" / f"{file_key}_ep{ep}.mp4"
+        video_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(video, video_target)
+        video_src = video_target.relative_to(out_dir).as_posix()
+        video_html = (
+            "<video controls playsinline preload='metadata'>"
+            f"<source src='{html.escape(video_src)}' type='video/mp4'>"
+            "Your browser does not support MP4 video playback."
+            "</video>"
+        )
         for frame_id in image_ids(row):
             target = out_dir / "frames" / "minimal_next" / f"{file_key}_ep{ep}_f{frame_id}.jpg"
             if frame_image(video, frame_id, target):
@@ -165,6 +177,7 @@ def render_examples(record: dict[str, Any], out_dir: Path) -> str:
         f"<article class='example'><h3>{html.escape(label)} / Sample {ep}</h3>"
         f"<p>Raw VLM output: <code>{html.escape(str(row.get('raw_prediction')))}</code>; system action: "
         f"<code>{'publish the next subtask' if row.get('planner_action') == 'switch' else 'continue the current subtask'}</code>; evidence frames: {image_ids(row)}</p>"
+        f"{video_html}"
         f"<div class='frames'>{''.join(images) or '<p>Frames unavailable.</p>'}</div>"
         f"<p>Completion check triggered → updated instruction ready: <b>{fmt(metric(row, 'boundary_to_instruction_ready'))}</b>; "
         f"completion check triggered → first low-level action: <b>{fmt(metric(row, 'boundary_to_first_action'))}</b>; "
@@ -300,6 +313,7 @@ p{{color:var(--muted)}} table{{display:block;width:100%;overflow-x:auto;border-c
 th,td{{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}} th{{background:#eef2f6}}
 .note,.example,details{{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin:12px 0}} summary{{cursor:pointer;font-weight:650}}
 pre{{white-space:pre-wrap;overflow-wrap:anywhere;background:#101828;color:#f2f4f7;border-radius:6px;padding:12px;font-size:12px}}
+.example video{{display:block;width:min(100%,720px);aspect-ratio:4/3;background:#101828;margin:12px 0;border-radius:6px}}
 .frames{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}} figure{{margin:0;border:1px solid var(--line);border-radius:6px;overflow:hidden}} img{{display:block;width:100%}} figcaption{{padding:6px 8px;color:var(--muted);font-size:12px}}
 code{{background:#eef2f6;padding:1px 4px;border-radius:4px}}
 @media (max-width:640px){{header,main{{padding:16px}}h1{{font-size:24px}}th,td{{padding:8px;font-size:12px}}}}

@@ -2,6 +2,11 @@
 
 Updated: 2026-08-09
 
+**Rendered experiment report:** https://233333nmc.github.io/highlow-handoff/
+
+The report includes the measured interaction latency, exact model inputs and
+outputs, verifier evidence frames, and representative rollout videos.
+
 This repository records the RoboTwin high-level / low-level handoff baseline, Gemma4-12B experiments, and the current `next` / `all` planner debugging results.
 
 ## 1. Work This Week
