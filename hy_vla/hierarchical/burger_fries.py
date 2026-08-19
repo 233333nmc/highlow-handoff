@@ -649,6 +649,7 @@ class BurgerFriesHighLevelController:
         planner_mode: str = "inline_vlm",
         visual_context_mode: str = "recent",
         include_phase_profile_hints: bool = True,
+        one_object_only: bool = False,
         backend: HighLevelBackend | None = None,
     ) -> None:
         resolved_phase_names = tuple(phase_names or (
@@ -718,6 +719,7 @@ class BurgerFriesHighLevelController:
                 f"got {visual_context_mode!r}"
             )
         self.include_phase_profile_hints = bool(include_phase_profile_hints)
+        self.one_object_only = bool(one_object_only)
         self.buffer = FrameBuffer(maxlen=max_memory_frames)
         self.memory_text = ""
         self.phase_names = resolved_phase_names
@@ -1207,20 +1209,40 @@ class BurgerFriesHighLevelController:
     ) -> str:
         del execution_report
         if previous_subtask:
+            first_line = (
+                "Generate the next robot subtask.\n"
+                if self.one_object_only
+                else "Generate the next object-level robot subtask.\n"
+            )
+            planner_rules = (
+                "Manipulate one object only and finish at one target.\n"
+                "Do not mention another object, another action, a list, or 'then'.\n"
+            ) if self.one_object_only else ""
             return (
-                "Generate the next object-level robot subtask.\n"
+                first_line +
                 f"Task: {self.task_instruction}\n"
                 f"Current subtask: {previous_subtask}\n"
                 f"Next subtask index: {phase_index + 1}\n"
+                f"{planner_rules}"
                 "The new subtask must name the object and its final target.\n"
                 "Do not repeat the current subtask. Do not verify completion.\n"
                 "Do not output a grasp-only, lift-only, move-only, or "
                 "release-only step."
             )
+        planner_rules = (
+            "Manipulate one object only and finish at one target.\n"
+            "Do not mention another object, another action, a list, or 'then'.\n"
+        ) if self.one_object_only else ""
+        first_line = (
+            "Generate one robot subtask.\n"
+            if self.one_object_only
+            else "Generate one object-level robot subtask.\n"
+        )
         return (
-            "Generate one object-level robot subtask.\n"
+            first_line +
             f"Task: {self.task_instruction}\n"
             f"Subtask index: {phase_index + 1}\n"
+            f"{planner_rules}"
             "The subtask must name the object and its final target.\n"
             "Do not output a grasp-only, lift-only, move-only, or "
             "release-only step."
@@ -1230,11 +1252,21 @@ class BurgerFriesHighLevelController:
         current_subtask = self._active_subtask or self._profile_subtask_for_phase(
             self._active_phase_index
         )
+        planner_rules = (
+            "Manipulate one object only and finish at one target.\n"
+            "Do not mention another object, another action, a list, or 'then'.\n"
+        ) if self.one_object_only else ""
+        first_line = (
+            "Generate the next robot subtask.\n"
+            if self.one_object_only
+            else "Generate the next object-level robot subtask.\n"
+        )
         return (
-            "Generate the next object-level robot subtask.\n"
+            first_line +
             f"Task: {self.task_instruction}\n"
             f"Current subtask: {current_subtask}\n"
             f"Next subtask index: {phase_index + 1}\n"
+            f"{planner_rules}"
             "The new subtask must name the object and its final target.\n"
             "Do not repeat the current subtask. Do not verify completion.\n"
             "Do not output a grasp-only, lift-only, move-only, or "

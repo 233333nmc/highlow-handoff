@@ -164,6 +164,65 @@ def _blocks_phase_complete(env: Any, phase_index: int) -> bool:
         return False
 
 
+def _blocks_two_phase_complete(env: Any, phase_index: int) -> bool:
+    """Completion oracle for the two-block stack task."""
+
+    try:
+        block1_complete = _blocks_first_subtask_complete(env)
+        if phase_index == 0:
+            return block1_complete
+        block1_position = _position(env.block1)
+        block2_position = _position(env.block2)
+        target = block1_position + np.asarray([0.0, 0.0, 0.05])
+        stacked = bool(np.all(np.abs(block2_position - target) < [0.025, 0.025, 0.012]))
+        return bool(block1_complete and stacked and _both_open(env))
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return False
+
+
+def _bowls_two_phase_complete(env: Any, phase_index: int) -> bool:
+    """Completion oracle for the two-bowl stack task."""
+
+    try:
+        bowl1_position = _position(env.bowl1)
+        bowl2_position = _position(env.bowl2)
+        first_target = np.asarray(env.bowl1_target_pose, dtype=float)
+        first_complete = (
+            float(np.linalg.norm(bowl1_position[:2] - first_target[:2])) < 0.04
+            and abs(float(bowl1_position[2]) - float(first_target[2])) < 0.04
+        )
+        if phase_index == 0:
+            return bool(first_complete and _both_open(env))
+        stacked = (
+            float(np.linalg.norm(bowl2_position[:2] - bowl1_position[:2])) < 0.04
+            and abs(float(bowl2_position[2]) - float(bowl1_position[2] + 0.05)) < 0.04
+        )
+        return bool(first_complete and stacked and _both_open(env))
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return False
+
+
+def _ranking_rgb_phase_complete(env: Any, phase_index: int) -> bool:
+    """Completion oracle for red/green/blue left-to-right placement."""
+
+    try:
+        blocks = (env.block1, env.block2, env.block3)
+        targets = (
+            np.asarray(env.block1_target_pose, dtype=float),
+            np.asarray(env.block2_target_pose, dtype=float),
+            np.asarray(env.block3_target_pose, dtype=float),
+        )
+        count = min(max(int(phase_index) + 1, 1), 3)
+        placed = all(
+            float(np.linalg.norm(_position(blocks[i])[:2] - targets[i][:2])) < 0.05
+            and abs(float(_position(blocks[i])[2]) - float(targets[i][2])) < 0.05
+            for i in range(count)
+        )
+        return bool(placed and _both_open(env))
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return False
+
+
 def _bowls_first_subtask_complete(env: Any) -> bool:
     try:
         target = np.asarray(env.bowl1_target_pose, dtype=float)
@@ -284,6 +343,40 @@ _PROFILES: dict[str, RoboTwinTaskProfile] = {
         ),
         first_subtask_complete=_blocks_first_subtask_complete,
         phase_complete=_blocks_phase_complete,
+    ),
+    "stack_blocks_two": RoboTwinTaskProfile(
+        task_name="stack_blocks_two",
+        task_instruction="Stack the red block on the green block at the center of the table.",
+        phase_names=("place red block", "stack green block"),
+        phase_prompts=(
+            "Place the red block at the center target.",
+            "Stack the green block on the red block.",
+        ),
+        first_subtask_complete=_blocks_first_subtask_complete,
+        phase_complete=_blocks_two_phase_complete,
+    ),
+    "stack_bowls_two": RoboTwinTaskProfile(
+        task_name="stack_bowls_two",
+        task_instruction="Stack the two bowls at the center of the table.",
+        phase_names=("place first bowl", "stack second bowl"),
+        phase_prompts=(
+            "Place the first bowl at the center target.",
+            "Stack the second bowl on the first bowl.",
+        ),
+        first_subtask_complete=_bowls_first_subtask_complete,
+        phase_complete=_bowls_two_phase_complete,
+    ),
+    "blocks_ranking_rgb": RoboTwinTaskProfile(
+        task_name="blocks_ranking_rgb",
+        task_instruction="Arrange the red, green, and blue blocks from left to right.",
+        phase_names=("place red block", "place green block", "place blue block"),
+        phase_prompts=(
+            "Place the red block at the left target.",
+            "Place the green block at the middle target.",
+            "Place the blue block at the right target.",
+        ),
+        first_subtask_complete=_blocks_first_subtask_complete,
+        phase_complete=_ranking_rgb_phase_complete,
     ),
     "stack_bowls_three": RoboTwinTaskProfile(
         task_name="stack_bowls_three",

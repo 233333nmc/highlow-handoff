@@ -1,220 +1,92 @@
-<!-- GitHub-rendered copy of docs/high-level-visual-memory-report/index.html. -->
+# Fixed-Boundary Incremental Planning: Test 1 vs Test 2
 
-<header><h1>Incremental Subtask Planning: High-Level and Low-Level Interaction Report</h1><p>Two robot-manipulation tasks under three visual-history settings</p></header>
+This branch compares two Gemma high-level planner prompts with the same fixed-boundary high-level/low-level controller. It contains the evaluation commands, original task instructions, and 120 rollout videos annotated with the actual subtask sent to Hy-VLA.
 
+Each prompt version covers 12 tasks with five episodes per task. This README works directly in a private GitHub repository and does not require GitHub Pages.
 
+## Experiment logic
 
-<main>
-<section><h2>Experimental Logic</h2>
-<p>The robot control system has two layers. A high-level vision-language model decomposes a natural-language task into executable object-level subtasks and judges whether the current subtask is complete. A low-level action model receives the current subtask text and directly generates continuous actions for the dual-arm robot.</p>
-<p>This experiment uses incremental subtask planning. At task start, the high-level model generates only the first subtask, which is sent to the low-level action model. While that subtask executes, the system prepares a possible next subtask in the background but does not publish it immediately. At a preset inspection time, low-level execution pauses; the high-level model views current or historical camera images and answers only whether the current subtask is complete.</p>
-<p>Only when the high-level model answers “completed” does the system send the prepared next subtask to the low-level action model and discard cached actions tied to the old instruction. When it answers “not completed,” the low-level model continues the current subtask and retains its action cache. This separates visual completion detection from semantic generation of the next subtask.</p>
-<p>The experiment covers “Place burger and fries” and “Put bottles in dustbin.” Visual inputs are: the current image at the inspection time; history sampled every 2 seconds; and history sampled at 1 frame per second. Each condition has 3 valid samples. The low-level model pauses while the high-level model works, so the total interaction time includes the real wait caused by high-level completion detection.</p>
-</section>
-<section><h2>Concrete Example</h2>
-<p>For “Place burger and fries,” the high-level planner first generates “place the burger on the tray” and prepares “place the fries on the tray” while the low-level model executes. The robot pauses at 2.40 seconds and the completion verifier sees frames 0, 25, 50, and 60. If it returns <code>{"completed":true}</code>, the system sends “place the fries on the tray” to the low-level action model, clears cached actions left from the burger subtask, and records the time until the low-level model produces its first action under the new instruction. If it returns <code>{"completed":false}</code>, the fries subtask is not published and the robot continues “place the burger on the tray.”</p></section>
-<h2>Interaction Time and Output Format in This Run</h2><table><thead><tr><th>Task</th><th>Visual input</th><th>Valid samples</th><th>Control action after completion check</th><th>Mean input images</th><th>Mean input tokens</th><th>Mean output tokens</th><th>Required-format adherence</th><th>Check triggered → decision ready</th><th>Check triggered → first low-level action</th></tr></thead><tbody><tr><td>Place burger and fries</td><td>History sampled at 1 frame per second</td><td>3</td><td>Continue current subtask: 1; publish next subtask: 2</td><td>4.0</td><td>1219.0</td><td>6.0</td><td>75.0%</td><td>457.6 ms</td><td>1083.7 ms</td></tr><tr><td>Put bottles in dustbin</td><td>History sampled at 1 frame per second</td><td>3</td><td>Continue current subtask: 3; publish next subtask: 0</td><td>6.0</td><td>1777.0</td><td>6.0</td><td>100.0%</td><td>477.6 ms</td><td>484.2 ms</td></tr><tr><td>Place burger and fries</td><td>History sampled every 2 seconds</td><td>3</td><td>Continue current subtask: 2; publish next subtask: 1</td><td>3.0</td><td>950.7</td><td>6.0</td><td>100.0%</td><td>343.4 ms</td><td>644.3 ms</td></tr><tr><td>Put bottles in dustbin</td><td>History sampled every 2 seconds</td><td>3</td><td>Continue current subtask: 3; publish next subtask: 0</td><td>4.0</td><td>1230.3</td><td>6.0</td><td>100.0%</td><td>373.4 ms</td><td>379.6 ms</td></tr><tr><td>Place burger and fries</td><td>Current image only</td><td>3</td><td>Continue current subtask: 2; publish next subtask: 1</td><td>1.0</td><td>392.3</td><td>6.0</td><td>100.0%</td><td>243.0 ms</td><td>544.5 ms</td></tr><tr><td>Put bottles in dustbin</td><td>Current image only</td><td>3</td><td>Continue current subtask: 3; publish next subtask: 0</td><td>1.0</td><td>399.3</td><td>6.0</td><td>100.0%</td><td>216.6 ms</td><td>222.1 ms</td></tr></tbody></table>
-<section><h2>How to Interpret the Timing</h2><p>“Check triggered → decision ready” fully records the wait caused by a high-level vision-language completion check and can be compared directly across visual-input settings. In contrast, “Check triggered → first low-level action” is also affected by the action cache. When the model judges that the current subtask is not complete, the system retains the existing instruction and generated action cache; the low-level model may directly take a cached action rather than run another neural-network inference. This value is therefore not always the full low-level inference time required after switching to a new subtask and should not be compared directly with samples that do switch subtasks.</p><p>Thus, a low-level action time near 0 ms does not mean the robot stopped being controlled. It means that step reused a previously generated action; the high-level completion-check time itself is still fully measured.</p></section>
-<section><h2>Why Current Single-Image Times Are Lower Than the Earlier ~400 ms Result</h2><p>The earlier ~400 ms value came from a text-only prompt-latency benchmark using the former multi-field JSON output. The model generated about 17 tokens on average, including a control decision, execution status, and a textual reason. This page uses the new, real robot completion request: although the input includes one camera image and about 400 input tokens, the model is required to output only <code>{"completed":true}</code> or <code>{"completed":false}</code>, averaging 6 output tokens.</p><p>For this model, generation is a material part of the latency of short requests. Shortening the output protocol therefore reduces current single-image completion checks to about 0.22–0.29 seconds. This change primarily reflects the shorter output format; it should not be interpreted as visual understanding itself becoming faster. The old text-only benchmark and the real image-based completion check on this page are not identical metrics.</p></section>
-<h2>Actual Prompts Received by the Models and Raw Outputs</h2><details><summary>Place burger and fries / History sampled at 1 frame per second</summary><p>The following is the exact English input sent to the models and their raw output, retained for reproducibility.</p><h4>Completion verifier: full input</h4><pre>Verify whether the current robot subtask is completed.
-Task: Pick up the rounded rectangular hamburg wrap and the Golden fries in red carton box together, then drop on the medium flat tray
-Current subtask: Pick up the rounded rectangular hamburg wrap and the Golden fries in red carton box and place them on the medium flat tray
-Images: 4 accumulated head-camera frames not previously sent to high-level: [0, 25, 50, 60]
-Use completed=true only when the subtask's final goal state is clearly visible. Otherwise use completed=false.
-Return exactly one JSON object and no Markdown:
-{"completed": true | false}</pre><h4>Completion verifier: raw output</h4><pre>evidence_frame_ids=[0, 25, 50, 60]
-{"completed": false}</pre><h4>Next-subtask planner: full input</h4><pre>Generate the next object-level robot subtask.
-Task: Pick up the rounded rectangular hamburg wrap and the Golden fries in red carton box together, then drop on the medium flat tray
-Current subtask: Pick up the rounded rectangular hamburg wrap and the Golden fries in red carton box and place them on the medium flat tray
-Next subtask index: 2
-The new subtask must name the object and its final target.
-Do not repeat the current subtask. Do not verify completion.
-Do not output a grasp-only, lift-only, move-only, or release-only step.
-Return exactly one JSON object and no Markdown:
-{"next_subtask": string}</pre><h4>Next-subtask planner: raw output</h4><pre>evidence_frame_ids=[]; text_only=true
-{"next_subtask": "Pick up the rounded rectangular hamburg wrap and place it on the medium flat tray"}</pre></details><details><summary>Put bottles in dustbin / History sampled at 1 frame per second</summary><p>The following is the exact English input sent to the models and their raw output, retained for reproducibility.</p><h4>Completion verifier: full input</h4><pre>Verify whether the current robot subtask is completed.
-Task: Move the plastic bottle with two distinct parts, the bottle with blue highlights, and the plastic bottle with ridges near bottom into the curved rectangular trash can on the left of the table.
-Current subtask: Move the plastic bottle with two distinct parts into the curved rectangular trash can on the left of the table.
-Images: 6 accumulated head-camera frames not previously sent to high-level: [0, 25, 50, 75, 100, 101]
-Use completed=true only when the subtask's final goal state is clearly visible. Otherwise use completed=false.
-Return exactly one JSON object and no Markdown:
-{"completed": true | false}</pre><h4>Completion verifier: raw output</h4><pre>evidence_frame_ids=[0, 25, 50, 75, 100, 101]
-{"completed": false}</pre><h4>Next-subtask planner: full input</h4><pre>Generate the next object-level robot subtask.
-Task: Move the plastic bottle with two distinct parts, the bottle with blue highlights, and the plastic bottle with ridges near bottom into the curved rectangular trash can on the left of the table.
-Current subtask: Move the plastic bottle with two distinct parts into the curved rectangular trash can on the left of the table.
-Next subtask index: 2
-The new subtask must name the object and its final target.
-Do not repeat the current subtask. Do not verify completion.
-Do not output a grasp-only, lift-only, move-only, or release-only step.
-Return exactly one JSON object and no Markdown:
-{"next_subtask": string}</pre><h4>Next-subtask planner: raw output</h4><pre>evidence_frame_ids=[]; text_only=true
-{"next_subtask": "Move the bottle with blue highlights into the curved rectangular trash can on the left of the table."}</pre></details><details><summary>Place burger and fries / History sampled every 2 seconds</summary><p>The following is the exact English input sent to the models and their raw output, retained for reproducibility.</p><h4>Completion verifier: full input</h4><pre>Verify whether the current robot subtask is completed.
-Task: Pick up the rounded rectangular hamburg wrap and the Crispy potato fries with red box and place them on the flat brown serving tray.
-Current subtask: Pick up the rounded rectangular hamburg wrap and place it on the flat brown serving tray
-Images: 3 accumulated head-camera frames not previously sent to high-level: [0, 50, 60]
-Use completed=true only when the subtask's final goal state is clearly visible. Otherwise use completed=false.
-Return exactly one JSON object and no Markdown:
-{"completed": true | false}</pre><h4>Completion verifier: raw output</h4><pre>evidence_frame_ids=[0, 50, 60]
-{"completed": false}</pre><h4>Next-subtask planner: full input</h4><pre>Generate the next object-level robot subtask.
-Task: Pick up the rounded rectangular hamburg wrap and the Crispy potato fries with red box and place them on the flat brown serving tray.
-Current subtask: Pick up the rounded rectangular hamburg wrap and place it on the flat brown serving tray
-Next subtask index: 2
-The new subtask must name the object and its final target.
-Do not repeat the current subtask. Do not verify completion.
-Do not output a grasp-only, lift-only, move-only, or release-only step.
-Return exactly one JSON object and no Markdown:
-{"next_subtask": string}</pre><h4>Next-subtask planner: raw output</h4><pre>evidence_frame_ids=[]; text_only=true
-{"next_subtask": "Pick up the Crispy potato fries with red box and place them on the flat brown serving tray"}</pre></details><details><summary>Put bottles in dustbin / History sampled every 2 seconds</summary><p>The following is the exact English input sent to the models and their raw output, retained for reproducibility.</p><h4>Completion verifier: full input</h4><pre>Verify whether the current robot subtask is completed.
-Task: Pick up the plastic bottle with two distinct parts and drop it into the simple black garbage bin, do the same for the bottle with blue highlights and the bottle with red screw cap.
-Current subtask: Pick up the plastic bottle with two distinct parts and drop it into the simple black garbage bin
-Images: 4 accumulated head-camera frames not previously sent to high-level: [0, 50, 100, 101]
-Use completed=true only when the subtask's final goal state is clearly visible. Otherwise use completed=false.
-Return exactly one JSON object and no Markdown:
-{"completed": true | false}</pre><h4>Completion verifier: raw output</h4><pre>evidence_frame_ids=[0, 50, 100, 101]
-{"completed": false}</pre><h4>Next-subtask planner: full input</h4><pre>Generate the next object-level robot subtask.
-Task: Pick up the plastic bottle with two distinct parts and drop it into the simple black garbage bin, do the same for the bottle with blue highlights and the bottle with red screw cap.
-Current subtask: Pick up the plastic bottle with two distinct parts and drop it into the simple black garbage bin
-Next subtask index: 2
-The new subtask must name the object and its final target.
-Do not repeat the current subtask. Do not verify completion.
-Do not output a grasp-only, lift-only, move-only, or release-only step.
-Return exactly one JSON object and no Markdown:
-{"next_subtask": string}</pre><h4>Next-subtask planner: raw output</h4><pre>evidence_frame_ids=[]; text_only=true
-{"next_subtask": "Pick up the bottle with blue highlights and drop it into the simple black garbage bin"}</pre></details><details><summary>Place burger and fries / Current image only</summary><p>The following is the exact English input sent to the models and their raw output, retained for reproducibility.</p><h4>Completion verifier: full input</h4><pre>Verify whether the current robot subtask is completed.
-Task: Pick up the hamburg with uneven white surface and the Crispy potato fries with red box and place them on the flat brown serving tray.
-Current subtask: Pick up the hamburg with uneven white surface and place it on the flat brown serving tray
-Images: one current head-camera frame
-Use completed=true only when the subtask's final goal state is clearly visible. Otherwise use completed=false.
-Return exactly one JSON object and no Markdown:
-{"completed": true | false}</pre><h4>Completion verifier: raw output</h4><pre>evidence_frame_ids=[60]
-{"completed": false}</pre><h4>Next-subtask planner: full input</h4><pre>Generate the next object-level robot subtask.
-Task: Pick up the hamburg with uneven white surface and the Crispy potato fries with red box and place them on the flat brown serving tray.
-Current subtask: Pick up the hamburg with uneven white surface and place it on the flat brown serving tray
-Next subtask index: 2
-The new subtask must name the object and its final target.
-Do not repeat the current subtask. Do not verify completion.
-Do not output a grasp-only, lift-only, move-only, or release-only step.
-Return exactly one JSON object and no Markdown:
-{"next_subtask": string}</pre><h4>Next-subtask planner: raw output</h4><pre>evidence_frame_ids=[]; text_only=true
-{"next_subtask": "Pick up the Crispy potato fries with red box and place them on the flat brown serving tray"}</pre></details><details><summary>Put bottles in dustbin / Current image only</summary><p>The following is the exact English input sent to the models and their raw output, retained for reproducibility.</p><h4>Completion verifier: full input</h4><pre>Verify whether the current robot subtask is completed.
-Task: Pick up the yellow plastic bottle, drop it into the simple black garbage bin, then repeat for the bottle with blue highlights and the medium black bottle.
-Current subtask: Pick up the yellow plastic bottle and drop it into the simple black garbage bin
-Images: one current head-camera frame
-Use completed=true only when the subtask's final goal state is clearly visible. Otherwise use completed=false.
-Return exactly one JSON object and no Markdown:
-{"completed": true | false}</pre><h4>Completion verifier: raw output</h4><pre>evidence_frame_ids=[101]
-{"completed": false}</pre><h4>Next-subtask planner: full input</h4><pre>Generate the next object-level robot subtask.
-Task: Pick up the yellow plastic bottle, drop it into the simple black garbage bin, then repeat for the bottle with blue highlights and the medium black bottle.
-Current subtask: Pick up the yellow plastic bottle and drop it into the simple black garbage bin
-Next subtask index: 2
-The new subtask must name the object and its final target.
-Do not repeat the current subtask. Do not verify completion.
-Do not output a grasp-only, lift-only, move-only, or release-only step.
-Return exactly one JSON object and no Markdown:
-{"next_subtask": string}</pre><h4>Next-subtask planner: raw output</h4><pre>evidence_frame_ids=[]; text_only=true
-{"next_subtask": "Pick up the bottle with blue highlights and drop it into the simple black garbage bin"}</pre></details>
-<h2>Actual Images and Example Executions</h2><article><h3>Place burger and fries / History sampled at 1 frame per second / Sample 0</h3><p>Raw VLM output: <code>evidence_frame_ids=[0, 25, 50, 60]
-{"completed": false}</code>; system action: <code>continue the current subtask</code>; evidence frames: [0, 25, 50, 60]</p><p><a href="docs/high-level-visual-memory-report/assets/rollouts/1hz_next_place_burger_fries_ep0.mp4"><img src="docs/high-level-visual-memory-report/assets/previews/1hz_next_place_burger_fries_ep0.gif" alt="Animated rollout preview: 1hz next place burger fries ep0" width="480"></a><br><strong><a href="docs/high-level-visual-memory-report/assets/rollouts/1hz_next_place_burger_fries_ep0.mp4">Open or download the original MP4</a></strong></p><div><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/1hz_next_place_burger_fries_ep0_f0.jpg" alt="Place burger and fries / History sampled at 1 frame per second frame 0"><figcaption>frame 0, 0.00s</figcaption></figure><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/1hz_next_place_burger_fries_ep0_f25.jpg" alt="Place burger and fries / History sampled at 1 frame per second frame 25"><figcaption>frame 25, 1.00s</figcaption></figure><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/1hz_next_place_burger_fries_ep0_f50.jpg" alt="Place burger and fries / History sampled at 1 frame per second frame 50"><figcaption>frame 50, 2.00s</figcaption></figure><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/1hz_next_place_burger_fries_ep0_f60.jpg" alt="Place burger and fries / History sampled at 1 frame per second frame 60"><figcaption>frame 60, 2.40s</figcaption></figure></div><p>Completion check triggered → updated instruction ready: <b>365.2 ms</b>; completion check triggered → first low-level action: <b>371.1 ms</b>; low-level neural inference for this action: <b>0.0 ms</b></p><details><summary>View exact model input and output</summary><p>The following is the exact English input sent to the models and their raw output, retained for reproducibility.</p><h4>Completion verifier: full input</h4><pre>Verify whether the current robot subtask is completed.
-Task: Pick up the rounded rectangular hamburg wrap and the Golden fries in red carton box together, then drop on the medium flat tray
-Current subtask: Pick up the rounded rectangular hamburg wrap and the Golden fries in red carton box and place them on the medium flat tray
-Images: 4 accumulated head-camera frames not previously sent to high-level: [0, 25, 50, 60]
-Use completed=true only when the subtask's final goal state is clearly visible. Otherwise use completed=false.
-Return exactly one JSON object and no Markdown:
-{"completed": true | false}</pre><h4>Completion verifier: raw output</h4><pre>evidence_frame_ids=[0, 25, 50, 60]
-{"completed": false}</pre><h4>Next-subtask planner: full input</h4><pre>Generate the next object-level robot subtask.
-Task: Pick up the rounded rectangular hamburg wrap and the Golden fries in red carton box together, then drop on the medium flat tray
-Current subtask: Pick up the rounded rectangular hamburg wrap and the Golden fries in red carton box and place them on the medium flat tray
-Next subtask index: 2
-The new subtask must name the object and its final target.
-Do not repeat the current subtask. Do not verify completion.
-Do not output a grasp-only, lift-only, move-only, or release-only step.
-Return exactly one JSON object and no Markdown:
-{"next_subtask": string}</pre><h4>Next-subtask planner: raw output</h4><pre>evidence_frame_ids=[]; text_only=true
-{"next_subtask": "Pick up the rounded rectangular hamburg wrap and place it on the medium flat tray"}</pre></details></article><article><h3>Put bottles in dustbin / History sampled at 1 frame per second / Sample 0</h3><p>Raw VLM output: <code>evidence_frame_ids=[0, 25, 50, 75, 100, 101]
-{"completed": false}</code>; system action: <code>continue the current subtask</code>; evidence frames: [0, 25, 50, 75, 100, 101]</p><p><a href="docs/high-level-visual-memory-report/assets/rollouts/1hz_next_put_bottles_dustbin_ep0.mp4"><img src="docs/high-level-visual-memory-report/assets/previews/1hz_next_put_bottles_dustbin_ep0.gif" alt="Animated rollout preview: 1hz next put bottles dustbin ep0" width="480"></a><br><strong><a href="docs/high-level-visual-memory-report/assets/rollouts/1hz_next_put_bottles_dustbin_ep0.mp4">Open or download the original MP4</a></strong></p><div><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/1hz_next_put_bottles_dustbin_ep0_f0.jpg" alt="Put bottles in dustbin / History sampled at 1 frame per second frame 0"><figcaption>frame 0, 0.00s</figcaption></figure><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/1hz_next_put_bottles_dustbin_ep0_f25.jpg" alt="Put bottles in dustbin / History sampled at 1 frame per second frame 25"><figcaption>frame 25, 1.00s</figcaption></figure><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/1hz_next_put_bottles_dustbin_ep0_f50.jpg" alt="Put bottles in dustbin / History sampled at 1 frame per second frame 50"><figcaption>frame 50, 2.00s</figcaption></figure><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/1hz_next_put_bottles_dustbin_ep0_f75.jpg" alt="Put bottles in dustbin / History sampled at 1 frame per second frame 75"><figcaption>frame 75, 3.00s</figcaption></figure><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/1hz_next_put_bottles_dustbin_ep0_f100.jpg" alt="Put bottles in dustbin / History sampled at 1 frame per second frame 100"><figcaption>frame 100, 4.00s</figcaption></figure><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/1hz_next_put_bottles_dustbin_ep0_f101.jpg" alt="Put bottles in dustbin / History sampled at 1 frame per second frame 101"><figcaption>frame 101, 4.04s</figcaption></figure></div><p>Completion check triggered → updated instruction ready: <b>480.9 ms</b>; completion check triggered → first low-level action: <b>487.5 ms</b>; low-level neural inference for this action: <b>0.0 ms</b></p><details><summary>View exact model input and output</summary><p>The following is the exact English input sent to the models and their raw output, retained for reproducibility.</p><h4>Completion verifier: full input</h4><pre>Verify whether the current robot subtask is completed.
-Task: Move the plastic bottle with two distinct parts, the bottle with blue highlights, and the plastic bottle with ridges near bottom into the curved rectangular trash can on the left of the table.
-Current subtask: Move the plastic bottle with two distinct parts into the curved rectangular trash can on the left of the table.
-Images: 6 accumulated head-camera frames not previously sent to high-level: [0, 25, 50, 75, 100, 101]
-Use completed=true only when the subtask's final goal state is clearly visible. Otherwise use completed=false.
-Return exactly one JSON object and no Markdown:
-{"completed": true | false}</pre><h4>Completion verifier: raw output</h4><pre>evidence_frame_ids=[0, 25, 50, 75, 100, 101]
-{"completed": false}</pre><h4>Next-subtask planner: full input</h4><pre>Generate the next object-level robot subtask.
-Task: Move the plastic bottle with two distinct parts, the bottle with blue highlights, and the plastic bottle with ridges near bottom into the curved rectangular trash can on the left of the table.
-Current subtask: Move the plastic bottle with two distinct parts into the curved rectangular trash can on the left of the table.
-Next subtask index: 2
-The new subtask must name the object and its final target.
-Do not repeat the current subtask. Do not verify completion.
-Do not output a grasp-only, lift-only, move-only, or release-only step.
-Return exactly one JSON object and no Markdown:
-{"next_subtask": string}</pre><h4>Next-subtask planner: raw output</h4><pre>evidence_frame_ids=[]; text_only=true
-{"next_subtask": "Move the bottle with blue highlights into the curved rectangular trash can on the left of the table."}</pre></details></article><article><h3>Place burger and fries / History sampled every 2 seconds / Sample 0</h3><p>Raw VLM output: <code>evidence_frame_ids=[0, 50, 60]
-{"completed": false}</code>; system action: <code>continue the current subtask</code>; evidence frames: [0, 50, 60]</p><p><a href="docs/high-level-visual-memory-report/assets/rollouts/2s_next_place_burger_fries_ep0.mp4"><img src="docs/high-level-visual-memory-report/assets/previews/2s_next_place_burger_fries_ep0.gif" alt="Animated rollout preview: 2s next place burger fries ep0" width="480"></a><br><strong><a href="docs/high-level-visual-memory-report/assets/rollouts/2s_next_place_burger_fries_ep0.mp4">Open or download the original MP4</a></strong></p><div><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/2s_next_place_burger_fries_ep0_f0.jpg" alt="Place burger and fries / History sampled every 2 seconds frame 0"><figcaption>frame 0, 0.00s</figcaption></figure><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/2s_next_place_burger_fries_ep0_f50.jpg" alt="Place burger and fries / History sampled every 2 seconds frame 50"><figcaption>frame 50, 2.00s</figcaption></figure><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/2s_next_place_burger_fries_ep0_f60.jpg" alt="Place burger and fries / History sampled every 2 seconds frame 60"><figcaption>frame 60, 2.40s</figcaption></figure></div><p>Completion check triggered → updated instruction ready: <b>326.0 ms</b>; completion check triggered → first low-level action: <b>331.9 ms</b>; low-level neural inference for this action: <b>0.0 ms</b></p><details><summary>View exact model input and output</summary><p>The following is the exact English input sent to the models and their raw output, retained for reproducibility.</p><h4>Completion verifier: full input</h4><pre>Verify whether the current robot subtask is completed.
-Task: Pick up the rounded rectangular hamburg wrap and the Crispy potato fries with red box and place them on the flat brown serving tray.
-Current subtask: Pick up the rounded rectangular hamburg wrap and place it on the flat brown serving tray
-Images: 3 accumulated head-camera frames not previously sent to high-level: [0, 50, 60]
-Use completed=true only when the subtask's final goal state is clearly visible. Otherwise use completed=false.
-Return exactly one JSON object and no Markdown:
-{"completed": true | false}</pre><h4>Completion verifier: raw output</h4><pre>evidence_frame_ids=[0, 50, 60]
-{"completed": false}</pre><h4>Next-subtask planner: full input</h4><pre>Generate the next object-level robot subtask.
-Task: Pick up the rounded rectangular hamburg wrap and the Crispy potato fries with red box and place them on the flat brown serving tray.
-Current subtask: Pick up the rounded rectangular hamburg wrap and place it on the flat brown serving tray
-Next subtask index: 2
-The new subtask must name the object and its final target.
-Do not repeat the current subtask. Do not verify completion.
-Do not output a grasp-only, lift-only, move-only, or release-only step.
-Return exactly one JSON object and no Markdown:
-{"next_subtask": string}</pre><h4>Next-subtask planner: raw output</h4><pre>evidence_frame_ids=[]; text_only=true
-{"next_subtask": "Pick up the Crispy potato fries with red box and place them on the flat brown serving tray"}</pre></details></article><article><h3>Put bottles in dustbin / History sampled every 2 seconds / Sample 0</h3><p>Raw VLM output: <code>evidence_frame_ids=[0, 50, 100, 101]
-{"completed": false}</code>; system action: <code>continue the current subtask</code>; evidence frames: [0, 50, 100, 101]</p><p><a href="docs/high-level-visual-memory-report/assets/rollouts/2s_next_put_bottles_dustbin_ep0.mp4"><img src="docs/high-level-visual-memory-report/assets/previews/2s_next_put_bottles_dustbin_ep0.gif" alt="Animated rollout preview: 2s next put bottles dustbin ep0" width="480"></a><br><strong><a href="docs/high-level-visual-memory-report/assets/rollouts/2s_next_put_bottles_dustbin_ep0.mp4">Open or download the original MP4</a></strong></p><div><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/2s_next_put_bottles_dustbin_ep0_f0.jpg" alt="Put bottles in dustbin / History sampled every 2 seconds frame 0"><figcaption>frame 0, 0.00s</figcaption></figure><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/2s_next_put_bottles_dustbin_ep0_f50.jpg" alt="Put bottles in dustbin / History sampled every 2 seconds frame 50"><figcaption>frame 50, 2.00s</figcaption></figure><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/2s_next_put_bottles_dustbin_ep0_f100.jpg" alt="Put bottles in dustbin / History sampled every 2 seconds frame 100"><figcaption>frame 100, 4.00s</figcaption></figure><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/2s_next_put_bottles_dustbin_ep0_f101.jpg" alt="Put bottles in dustbin / History sampled every 2 seconds frame 101"><figcaption>frame 101, 4.04s</figcaption></figure></div><p>Completion check triggered → updated instruction ready: <b>382.0 ms</b>; completion check triggered → first low-level action: <b>387.9 ms</b>; low-level neural inference for this action: <b>0.0 ms</b></p><details><summary>View exact model input and output</summary><p>The following is the exact English input sent to the models and their raw output, retained for reproducibility.</p><h4>Completion verifier: full input</h4><pre>Verify whether the current robot subtask is completed.
-Task: Pick up the plastic bottle with two distinct parts and drop it into the simple black garbage bin, do the same for the bottle with blue highlights and the bottle with red screw cap.
-Current subtask: Pick up the plastic bottle with two distinct parts and drop it into the simple black garbage bin
-Images: 4 accumulated head-camera frames not previously sent to high-level: [0, 50, 100, 101]
-Use completed=true only when the subtask's final goal state is clearly visible. Otherwise use completed=false.
-Return exactly one JSON object and no Markdown:
-{"completed": true | false}</pre><h4>Completion verifier: raw output</h4><pre>evidence_frame_ids=[0, 50, 100, 101]
-{"completed": false}</pre><h4>Next-subtask planner: full input</h4><pre>Generate the next object-level robot subtask.
-Task: Pick up the plastic bottle with two distinct parts and drop it into the simple black garbage bin, do the same for the bottle with blue highlights and the bottle with red screw cap.
-Current subtask: Pick up the plastic bottle with two distinct parts and drop it into the simple black garbage bin
-Next subtask index: 2
-The new subtask must name the object and its final target.
-Do not repeat the current subtask. Do not verify completion.
-Do not output a grasp-only, lift-only, move-only, or release-only step.
-Return exactly one JSON object and no Markdown:
-{"next_subtask": string}</pre><h4>Next-subtask planner: raw output</h4><pre>evidence_frame_ids=[]; text_only=true
-{"next_subtask": "Pick up the bottle with blue highlights and drop it into the simple black garbage bin"}</pre></details></article><article><h3>Place burger and fries / Current image only / Sample 0</h3><p>Raw VLM output: <code>evidence_frame_ids=[60]
-{"completed": false}</code>; system action: <code>continue the current subtask</code>; evidence frames: [60]</p><p><a href="docs/high-level-visual-memory-report/assets/rollouts/single_next_place_burger_fries_ep0.mp4"><img src="docs/high-level-visual-memory-report/assets/previews/single_next_place_burger_fries_ep0.gif" alt="Animated rollout preview: single next place burger fries ep0" width="480"></a><br><strong><a href="docs/high-level-visual-memory-report/assets/rollouts/single_next_place_burger_fries_ep0.mp4">Open or download the original MP4</a></strong></p><div><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/single_next_place_burger_fries_ep0_f60.jpg" alt="Place burger and fries / Current image only frame 60"><figcaption>frame 60, 2.40s</figcaption></figure></div><p>Completion check triggered → updated instruction ready: <b>214.2 ms</b>; completion check triggered → first low-level action: <b>220.5 ms</b>; low-level neural inference for this action: <b>0.0 ms</b></p><details><summary>View exact model input and output</summary><p>The following is the exact English input sent to the models and their raw output, retained for reproducibility.</p><h4>Completion verifier: full input</h4><pre>Verify whether the current robot subtask is completed.
-Task: Pick up the hamburg with uneven white surface and the Crispy potato fries with red box and place them on the flat brown serving tray.
-Current subtask: Pick up the hamburg with uneven white surface and place it on the flat brown serving tray
-Images: one current head-camera frame
-Use completed=true only when the subtask's final goal state is clearly visible. Otherwise use completed=false.
-Return exactly one JSON object and no Markdown:
-{"completed": true | false}</pre><h4>Completion verifier: raw output</h4><pre>evidence_frame_ids=[60]
-{"completed": false}</pre><h4>Next-subtask planner: full input</h4><pre>Generate the next object-level robot subtask.
-Task: Pick up the hamburg with uneven white surface and the Crispy potato fries with red box and place them on the flat brown serving tray.
-Current subtask: Pick up the hamburg with uneven white surface and place it on the flat brown serving tray
-Next subtask index: 2
-The new subtask must name the object and its final target.
-Do not repeat the current subtask. Do not verify completion.
-Do not output a grasp-only, lift-only, move-only, or release-only step.
-Return exactly one JSON object and no Markdown:
-{"next_subtask": string}</pre><h4>Next-subtask planner: raw output</h4><pre>evidence_frame_ids=[]; text_only=true
-{"next_subtask": "Pick up the Crispy potato fries with red box and place them on the flat brown serving tray"}</pre></details></article><article><h3>Put bottles in dustbin / Current image only / Sample 0</h3><p>Raw VLM output: <code>evidence_frame_ids=[101]
-{"completed": false}</code>; system action: <code>continue the current subtask</code>; evidence frames: [101]</p><p><a href="docs/high-level-visual-memory-report/assets/rollouts/single_next_put_bottles_dustbin_ep0.mp4"><img src="docs/high-level-visual-memory-report/assets/previews/single_next_put_bottles_dustbin_ep0.gif" alt="Animated rollout preview: single next put bottles dustbin ep0" width="480"></a><br><strong><a href="docs/high-level-visual-memory-report/assets/rollouts/single_next_put_bottles_dustbin_ep0.mp4">Open or download the original MP4</a></strong></p><div><figure><img src="docs/high-level-visual-memory-report/frames/minimal_next/single_next_put_bottles_dustbin_ep0_f101.jpg" alt="Put bottles in dustbin / Current image only frame 101"><figcaption>frame 101, 4.04s</figcaption></figure></div><p>Completion check triggered → updated instruction ready: <b>212.7 ms</b>; completion check triggered → first low-level action: <b>217.8 ms</b>; low-level neural inference for this action: <b>0.0 ms</b></p><details><summary>View exact model input and output</summary><p>The following is the exact English input sent to the models and their raw output, retained for reproducibility.</p><h4>Completion verifier: full input</h4><pre>Verify whether the current robot subtask is completed.
-Task: Pick up the yellow plastic bottle, drop it into the simple black garbage bin, then repeat for the bottle with blue highlights and the medium black bottle.
-Current subtask: Pick up the yellow plastic bottle and drop it into the simple black garbage bin
-Images: one current head-camera frame
-Use completed=true only when the subtask's final goal state is clearly visible. Otherwise use completed=false.
-Return exactly one JSON object and no Markdown:
-{"completed": true | false}</pre><h4>Completion verifier: raw output</h4><pre>evidence_frame_ids=[101]
-{"completed": false}</pre><h4>Next-subtask planner: full input</h4><pre>Generate the next object-level robot subtask.
-Task: Pick up the yellow plastic bottle, drop it into the simple black garbage bin, then repeat for the bottle with blue highlights and the medium black bottle.
-Current subtask: Pick up the yellow plastic bottle and drop it into the simple black garbage bin
-Next subtask index: 2
-The new subtask must name the object and its final target.
-Do not repeat the current subtask. Do not verify completion.
-Do not output a grasp-only, lift-only, move-only, or release-only step.
-Return exactly one JSON object and no Markdown:
-{"next_subtask": string}</pre><h4>Next-subtask planner: raw output</h4><pre>evidence_frame_ids=[]; text_only=true
-{"next_subtask": "Pick up the bottle with blue highlights and drop it into the simple black garbage bin"}</pre></details></article>
-<section><h2>Historical n=10: VLM Completion-Detection Accuracy</h2><p>This table retains the results of the earlier n=10 experiment. At every measurement boundary, simulator ground truth marked the current subtask as completed; a VLM response is correct only when it also reports completion.</p><p>This measures recall for recognizing completion at the selected boundary, not classification accuracy on a balanced completed/unfinished dataset.</p><table><thead><tr><th>Subtask planning method</th><th>Visual input</th><th>Robot task</th><th>Samples</th><th>Simulator ground truth: completed</th><th>Model predicted: completed</th><th>Correct</th><th>Completion recall</th><th>False negatives</th></tr></thead><tbody><tr><td>Incremental subtask planning</td><td>Current image only</td><td>Place burger and fries</td><td>10</td><td>10</td><td>1</td><td>1/10</td><td>10.0%</td><td>9</td></tr><tr><td>Full plan generated at task start</td><td>Current image only</td><td>Place burger and fries</td><td>10</td><td>10</td><td>0</td><td>0/10</td><td>0.0%</td><td>10</td></tr><tr><td>Incremental subtask planning</td><td>History sampled every 2 seconds</td><td>Place burger and fries</td><td>10</td><td>10</td><td>0</td><td>0/10</td><td>0.0%</td><td>10</td></tr><tr><td>Full plan generated at task start</td><td>History sampled every 2 seconds</td><td>Place burger and fries</td><td>10</td><td>10</td><td>0</td><td>0/10</td><td>0.0%</td><td>10</td></tr><tr><td>Incremental subtask planning</td><td>History sampled at 1 frame per second</td><td>Place burger and fries</td><td>10</td><td>10</td><td>2</td><td>2/10</td><td>20.0%</td><td>8</td></tr><tr><td>Full plan generated at task start</td><td>History sampled at 1 frame per second</td><td>Place burger and fries</td><td>10</td><td>10</td><td>1</td><td>1/10</td><td>10.0%</td><td>9</td></tr><tr><td>Incremental subtask planning</td><td>Current image only</td><td>Put bottles in dustbin</td><td>10</td><td>10</td><td>0</td><td>0/10</td><td>0.0%</td><td>10</td></tr><tr><td>Full plan generated at task start</td><td>Current image only</td><td>Put bottles in dustbin</td><td>10</td><td>10</td><td>0</td><td>0/10</td><td>0.0%</td><td>10</td></tr><tr><td>Incremental subtask planning</td><td>History sampled every 2 seconds</td><td>Put bottles in dustbin</td><td>10</td><td>10</td><td>0</td><td>0/10</td><td>0.0%</td><td>10</td></tr><tr><td>Full plan generated at task start</td><td>History sampled every 2 seconds</td><td>Put bottles in dustbin</td><td>10</td><td>10</td><td>0</td><td>0/10</td><td>0.0%</td><td>10</td></tr><tr><td>Incremental subtask planning</td><td>History sampled at 1 frame per second</td><td>Put bottles in dustbin</td><td>10</td><td>10</td><td>0</td><td>0/10</td><td>0.0%</td><td>10</td></tr><tr><td>Full plan generated at task start</td><td>History sampled at 1 frame per second</td><td>Put bottles in dustbin</td><td>10</td><td>10</td><td>1</td><td>1/10</td><td>10.0%</td><td>9</td></tr><tr><th colspan="3">Total</th><th>120</th><th>120</th><th>5</th><th>5/120</th><th>4.2%</th><th>115</th></tr></tbody></table></section>
-</main>
+The high-level Gemma planner generates the first object-level subtask from the full RoboTwin task instruction. Hy-VLA executes that subtask until a task-specific fixed boundary. At the boundary, low-level execution pauses while Gemma receives unseen head-camera history sampled at 1 Hz and returns only:
+
+```json
+{"completed": true}
+```
+
+or:
+
+```json
+{"completed": false}
+```
+
+When the answer is `true`, the controller publishes the prefetched next subtask and clears actions cached under the old instruction. When the answer is `false`, it retains the current instruction and action cache. Each episode permits up to ten fixed-boundary checks.
+
+Common settings:
+
+- High-level model: Gemma 4 through the server at `http://127.0.0.1:8003`
+- Low-level model: Hy-VLA
+- Planner mode: incremental `vlm_plan_next`
+- Completion output: `completion_bool`
+- Visual memory: unseen frames sampled at 1 Hz, up to eight images
+- High-level execution: blocking (`HL_ASYNC_ENABLED=False`)
+- Evaluation: 12 tasks, five episodes per prompt version
+
+## Test 1 and Test 2
+
+### Test 1: original planner prompt
+
+Test 1 asks Gemma to generate one object-level robot subtask. It does not explicitly prohibit mentioning multiple objects, so some outputs combine actions such as placing both the burger and fries in one instruction.
+
+### Test 2: one-object-only planner prompt
+
+Test 2 adds only these constraints:
+
+```text
+Manipulate one object only and finish at one target.
+Do not mention another object, another action, a list, or 'then'.
+```
+
+The completion verifier, image history, fixed boundaries, switching logic, and Hy-VLA policy are unchanged. The implementation exposes an explicit switch: Test 1 runs with `HL_ONE_OBJECT_ONLY=False`, while the Test 2 wrapper sets `ONE_OBJECT_ONLY=True`.
+
+## Annotated video examples
+
+GitHub may not embed repository MP4 files as inline players in a README. The links below open the actual annotated files for repository collaborators.
+
+| Version | Burger and fries, episode 0 |
+| --- | --- |
+| Test 1 | [Open annotated MP4](test1_test2_report/videos/test1/place_burger_fries/episode0_subtask.mp4) |
+| Test 2 | [Open annotated MP4](test1_test2_report/videos/test2/place_burger_fries/episode0_subtask.mp4) |
+
+## All tasks and videos
+
+Each Test 1 or Test 2 link opens a directory containing episodes 0-4.
+
+| Task | Original RoboTwin instruction | Test 1 | Test 2 |
+| --- | --- | --- | --- |
+| Place cans in plastic box | `Use dual arm to pick and place cans into plasticbox` | [5 videos](test1_test2_report/videos/test1/place_cans_plasticbox/) | [5 videos](test1_test2_report/videos/test2/place_cans_plasticbox/) |
+| Stack three bowls | `stack the three bowls on top of each other` | [5 videos](test1_test2_report/videos/test1/stack_bowls_three/) | [5 videos](test1_test2_report/videos/test2/stack_bowls_three/) |
+| Stack two bowls | `stack the two bowls on top of each other` | [5 videos](test1_test2_report/videos/test1/stack_bowls_two/) | [5 videos](test1_test2_report/videos/test2/stack_bowls_two/) |
+| Place two shoes | `use both arms to pick up the two shoes on the table and put them in the shoebox, with the shoe tip pointing to the left` | [5 videos](test1_test2_report/videos/test1/place_dual_shoes/) | [5 videos](test1_test2_report/videos/test2/place_dual_shoes/) |
+| Hang a mug | `Use left arm to pick the mug on the table, rotate the mug and put the mug down in the middle of the table, use the right arm to pick the mug and hang it onto the rack.` | [5 videos](test1_test2_report/videos/test1/hanging_mug/) | [5 videos](test1_test2_report/videos/test2/hanging_mug/) |
+| Put an object in a cabinet | `use {a} to open the cabinet's drawer, and use another arm to put the object on the table to the drawer.` | [5 videos](test1_test2_report/videos/test1/put_object_cabinet/) | [5 videos](test1_test2_report/videos/test2/put_object_cabinet/) |
+| Handover a block | `use the left arm to grasp the red block on the table, handover it to the right arm and place it on the blue pad` | [5 videos](test1_test2_report/videos/test1/handover_block/) | [5 videos](test1_test2_report/videos/test2/handover_block/) |
+| Handover a microphone | `Use one arm to grasp the microphone on the table and handover it to the other arm` | [5 videos](test1_test2_report/videos/test1/handover_mic/) | [5 videos](test1_test2_report/videos/test2/handover_mic/) |
+| Stack two blocks | `there are two blocks on the table, the color of the blocks is <red, green>, <move the blocks to the center of the table>, and <stack the geen block on the red block>` | [5 videos](test1_test2_report/videos/test1/stack_blocks_two/) | [5 videos](test1_test2_report/videos/test2/stack_blocks_two/) |
+| Arrange RGB blocks | `<Place> the red block, green block, and blue block <in the order> of red, green, and blue from left to right, <placing in a row>.` | [5 videos](test1_test2_report/videos/test1/blocks_ranking_rgb/) | [5 videos](test1_test2_report/videos/test2/blocks_ranking_rgb/) |
+| Place burger and fries | `Use dual arm to pick the hamburg and frenchfries and put them onto the tray.` | [5 videos](test1_test2_report/videos/test1/place_burger_fries/) | [5 videos](test1_test2_report/videos/test2/place_burger_fries/) |
+| Stack three blocks | `there are three blocks on the table, the color of the blocks is <red, green and blue>, <move the blocks to the center of the table>, and <stack the blue block on the green block, and the green block on the red block>` | [5 videos](test1_test2_report/videos/test1/stack_blocks_three/) | [5 videos](test1_test2_report/videos/test2/stack_blocks_three/) |
+
+## Reproduction commands
+
+The Gemma service must already be running on port 8003.
+
+```bash
+cd /mnt/cpfs/epic-user/niumuchun-20260612/high_level_memory/Hy-Embodied-0.5-VLA
+
+# Test 1: original planner prompt and task-specific boundary calibration
+TEST_NUM=5 bash scripts/run_gemma_fixed_next_12tasks_n5.sh
+
+# Test 2: one-object-only prompt, reusing Test 1 boundary calibration
+TEST_NUM=5 bash scripts/run_gemma_fixed_next_test2.sh
+```
+
+The complete experiment notes are in [the detailed report](test1_test2_report/TEST1_TEST2_REPORT.md). The local interactive comparison page is retained in the experiment directory but requires a normal static HTTP server because GitHub does not execute repository HTML as a hosted website.

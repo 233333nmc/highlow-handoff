@@ -37,6 +37,7 @@ HL_PROMPT_MODE=${HL_PROMPT_MODE:-legacy}
 HL_PLANNER_MODE=${HL_PLANNER_MODE:-inline_vlm}
 HL_PHASE_PROMPTS_JSON=${HL_PHASE_PROMPTS_JSON:-}
 HL_INCLUDE_PHASE_PROFILE_HINTS=${HL_INCLUDE_PHASE_PROFILE_HINTS:-True}
+HL_ONE_OBJECT_ONLY=${HL_ONE_OBJECT_ONLY:-False}
 HL_ASYNC_ENABLED=${HL_ASYNC_ENABLED:-False}
 HL_ASYNC_DROP_STALE_S=${HL_ASYNC_DROP_STALE_S:-0.0}
 HL_FORCE_VISUAL_ON_DECISION=${HL_FORCE_VISUAL_ON_DECISION:-False}
@@ -136,6 +137,7 @@ echo "High-level backend : ${HL_BACKEND}"
 echo "Prompt mode        : ${HL_PROMPT_MODE}"
 echo "Planner mode       : ${HL_PLANNER_MODE}"
 echo "Profile hints      : ${HL_INCLUDE_PHASE_PROFILE_HINTS}"
+echo "One object only    : ${HL_ONE_OBJECT_ONLY}"
 if [[ -n "${HL_PHASE_PROMPTS_JSON}" ]]; then
   echo "Phase prompts JSON : ${HL_PHASE_PROMPTS_JSON}"
 fi
@@ -187,6 +189,7 @@ fi
       --hierarchical_planner_mode "${HL_PLANNER_MODE}" \
       --hierarchical_phase_prompts_json "${HL_PHASE_PROMPTS_JSON}" \
       --hierarchical_include_phase_profile_hints "${HL_INCLUDE_PHASE_PROFILE_HINTS}" \
+      --hierarchical_one_object_only "${HL_ONE_OBJECT_ONLY}" \
       --hierarchical_async_enabled "${HL_ASYNC_ENABLED}" \
       --hierarchical_async_drop_stale_s "${HL_ASYNC_DROP_STALE_S}" \
       --hierarchical_force_visual_on_decision "${HL_FORCE_VISUAL_ON_DECISION}" \

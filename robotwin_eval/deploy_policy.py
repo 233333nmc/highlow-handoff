@@ -937,8 +937,27 @@ def _publish_high_level_decision(
         profile = getattr(model, "hierarchical_task_profile", None)
         if profile is not None:
             try:
+                # ``finish_step`` advances the controller phase when the VLM
+                # says ``switch``. Evaluate the phase that was active at the
+                # boundary, not the newly published phase.
+                oracle_phase_index = int(decision.phase_index)
+                if str(decision.planner_action) == "switch":
+                    oracle_phase_index = max(0, oracle_phase_index - 1)
+                phase_complete_fn = getattr(profile, "is_phase_complete", None)
+                if callable(phase_complete_fn):
+                    oracle_completed = bool(
+                        phase_complete_fn(TASK_ENV, oracle_phase_index)
+                    )
+                else:
+                    oracle_completed = bool(
+                        oracle_phase_index == 0
+                        and profile.first_subtask_complete(TASK_ENV)
+                    )
+                decision.timing_ms["measurement_oracle_phase_index"] = float(
+                    oracle_phase_index
+                )
                 decision.timing_ms["measurement_oracle_completed"] = (
-                    1.0 if bool(profile.first_subtask_complete(TASK_ENV)) else 0.0
+                    1.0 if oracle_completed else 0.0
                 )
             except Exception as exc:  # noqa: BLE001 - log availability, keep eval alive.
                 decision.timing_ms["measurement_oracle_completed_available"] = 0.0
