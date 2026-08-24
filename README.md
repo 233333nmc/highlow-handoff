@@ -1,3 +1,9 @@
+# Latest LingBot-VLA Subtask-Following Diagnostics
+
+The latest combined report is [LingBot-VLA 2.0 Subtask-Following Diagnostics](lingbot_subtask_following_review/README.md). It contains 75 annotated MP4 videos: the previous 12-task LingBot fixed-boundary set plus 15 focused hanging-mug videos covering delayed wrong-instruction recovery, fixed-time handoff, and clean first-subtask control.
+
+The report shows that publishing a new subtask and clearing the old LingBot action cache work correctly, but the low-level policy does not provide a strict subtask-completion or stop state. GitHub may show MP4 files as downloadable links rather than inline players in a private repository; the files remain available after cloning the branch.
+
 # Fixed-Boundary Incremental Planning: Test 1 vs Test 2
 
 This branch compares two Gemma high-level planner prompts with the same fixed-boundary high-level/low-level controller. It contains the evaluation commands, original task instructions, and 120 rollout videos annotated with the actual subtask sent to Hy-VLA.
