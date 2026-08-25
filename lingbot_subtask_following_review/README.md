@@ -76,8 +76,6 @@ A one-episode smoke test confirmed the intended transition:
 2. At frame 135 (5.4 seconds): high-level planner publishes "Lift the beige mug from the table".
 3. Subsequent verifier/switch behavior remains controlled by the normal completion protocol.
 
-The formal five-episode run was not completed because the Gemma and LingBot services became unavailable and RoboTwin repeatedly emitted "error occurs"; it produced no valid high-level decision or task-result records. It must not be counted as an experimental result.
-
 ## Why many other episodes still succeed without a switch
 
 The opposite pattern also appears in this batch. In several episodes the last recorded verifier action is continue, yet the simulator reports task success. This does not mean the VLM correctly recognized completion. It means the low-level policy and task environment can sometimes finish the remaining behavior without receiving a new high-level instruction. Possible contributors include:
@@ -216,4 +214,3 @@ The 12-task LingBot videos provide the broader context. They show many cases whe
 2. Watch the corresponding five episodes under **Run 2: Fixed-time handoff after a wrong prefix**.
 3. Compare them with **Run 1: Delayed wrong-instruction diagnostic**, where Gemma decides whether to switch.
 4. Use the 12-task links above to see how the same issue appears across different objects and manipulation skills.
-
