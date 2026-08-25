@@ -29,6 +29,10 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   echo "This launcher must run inside an sbatch allocation." >&2
   exit 2
 fi
+if [[ ! "$SLURM_JOB_ID" =~ ^[0-9]+([_.][0-9]+)*$ ]]; then
+  echo "SLURM_JOB_ID contains unsupported path characters: $SLURM_JOB_ID" >&2
+  exit 2
+fi
 if [[ -z "${STORAGE:-}" ]]; then
   echo "STORAGE must be exported when the job is submitted." >&2
   exit 2
@@ -56,6 +60,7 @@ readonly ROBOTWIN_PINNED_COMMIT="c3ddfa8b97d5519efa828b075999bd0006778e5e"
 readonly RUN_ROOT="$STORAGE/runs/highlow-handoff/jobs/$SLURM_JOB_ID"
 readonly LOG_ROOT="$RUN_ROOT/logs"
 readonly CACHE_ROOT="$RUN_ROOT/cache"
+readonly SGLANG_IPC_TMP="/tmp/highlow-sglang-$SLURM_JOB_ID"
 
 mkdir -p \
   "$LOG_ROOT" \
@@ -388,6 +393,7 @@ declare -a PROCESS_PIDS=()
 declare -a PROCESS_NAMES=()
 declare -a PROCESS_LOGS=()
 LAST_PID=""
+SGLANG_IPC_OWNED=0
 
 start_process() {
   local name="$1" gpu_token="$2" process_log="$3"
@@ -430,6 +436,11 @@ cleanup() {
     kill -KILL -- "-${PROCESS_PIDS[index]}" 2>/dev/null
     wait "${PROCESS_PIDS[index]}" 2>/dev/null
   done
+  if [[ "$SGLANG_IPC_OWNED" == 1 && -d "$SGLANG_IPC_TMP" ]]; then
+    find "$SGLANG_IPC_TMP" -mindepth 1 -depth -delete 2>/dev/null
+    rmdir "$SGLANG_IPC_TMP" 2>/dev/null || \
+      log "warning: could not remove SGLang IPC directory $SGLANG_IPC_TMP"
+  fi
   exit "$rc"
 }
 trap cleanup EXIT
@@ -437,9 +448,15 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
+[[ ! -e "$SGLANG_IPC_TMP" ]] || \
+  die "SGLang IPC directory already exists: $SGLANG_IPC_TMP"
+mkdir -m 700 "$SGLANG_IPC_TMP"
+SGLANG_IPC_OWNED=1
+
 start_process \
   sglang "$SGLANG_GPU" "$LOG_ROOT/sglang.log" \
-  env CUDA_HOME="$CUDA_TOOLKIT_DIR" \
+  env TMPDIR="$SGLANG_IPC_TMP" \
+  CUDA_HOME="$CUDA_TOOLKIT_DIR" \
   PATH="$SGLANG_PATH" \
   LD_LIBRARY_PATH="$SGLANG_LD_LIBRARY_PATH" \
   MAX_JOBS=8 \

@@ -100,7 +100,11 @@ PYTHONPATH="$STORAGE/src/highlow-handoff" \
 Do not install packages or download checkpoints from inside the batch job.
 The launcher enables offline Hugging Face mode. It also places Hugging Face,
 Torch, XDG, uv, matplotlib, Triton, FlashInfer, CUDA, and temporary caches below
-`$RUN_ROOT`; it neither changes nor uses `HOME` for runtime state.
+`$RUN_ROOT`; it neither changes nor uses `HOME` for runtime state. SGLang is the
+one exception for transient IPC socket names: Linux limits Unix-domain socket
+paths, so that process gets `/tmp/highlow-sglang-$SLURM_JOB_ID` as `TMPDIR`.
+The process-group cleanup removes this node-local directory after SGLang exits;
+no persistent artifact is stored there.
 
 ## Fast real-HTTP probe
 
