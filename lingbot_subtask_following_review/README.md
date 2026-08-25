@@ -1,3 +1,4 @@
+pgrep: uptime
 # LingBot-VLA 2.0 Subtask-Following Diagnostics
 
 This folder combines the previous **12-task LingBot-VLA 2.0 fixed-boundary evaluation** with **15 focused hanging-mug videos**. The goal is to separate two questions:
@@ -7,9 +8,6 @@ This folder combines the previous **12-task LingBot-VLA 2.0 fixed-boundary evalu
 
 There are 75 annotated MP4 files in this package: 60 from the 12-task LingBot set and 15 from three five-episode mug diagnostics.
 
-The interactive local viewer (when the report directory is served) is:
-
-http://127.0.0.1:8773/
 
 The MP4 files are also linked below. GitHub may offer them as downloads rather than inline playback, especially for a private repository. The links still preserve the exact video files and can be opened after cloning the branch.
 
@@ -218,3 +216,4 @@ The 12-task LingBot videos provide the broader context. They show many cases whe
 2. Watch the corresponding five episodes under **Run 2: Fixed-time handoff after a wrong prefix**.
 3. Compare them with **Run 1: Delayed wrong-instruction diagnostic**, where Gemma decides whether to switch.
 4. Use the 12-task links above to see how the same issue appears across different objects and manipulation skills.
+
