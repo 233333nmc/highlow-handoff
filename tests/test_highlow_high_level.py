@@ -237,6 +237,23 @@ class HighLevelServiceTest(unittest.TestCase):
         self.assertEqual(response.prompt_version, VERIFIER_PROMPT_V1)
         self.assertEqual(response.schema_version, VERIFIER_SCHEMA_V1)
         self.assertIn("frame_id\":12", backend.requests[0].prompt)
+        branches = {
+            branch["properties"]["decision"]["const"]: branch
+            for branch in backend.requests[0].response_schema["anyOf"]
+        }
+        self.assertEqual(set(branches), {"same", "switch"})
+        self.assertNotIn(
+            "completed", branches["same"]["properties"]["status"]["enum"]
+        )
+        self.assertEqual(
+            branches["same"]["properties"]["next_subtask"]["const"], ""
+        )
+        self.assertEqual(
+            branches["switch"]["properties"]["status"]["const"], "completed"
+        )
+        self.assertEqual(
+            branches["switch"]["properties"]["next_subtask"]["minLength"], 1
+        )
 
     def test_missing_verifier_current_subtask_fails_before_backend(self):
         backend = FakeBackend({})
@@ -479,7 +496,7 @@ class SGLangBackendTest(unittest.TestCase):
                 )
             )
 
-    def test_switch_requires_completed_status_and_next_subtask(self):
+    def test_verifier_rejects_inconsistent_decision_status_and_next_subtask(self):
         for payload in (
             {
                 "decision": "switch",
@@ -492,6 +509,18 @@ class SGLangBackendTest(unittest.TestCase):
                 "status": "completed",
                 "next_subtask": "",
                 "evidence": "done",
+            },
+            {
+                "decision": "same",
+                "status": "completed",
+                "next_subtask": "",
+                "evidence": "done",
+            },
+            {
+                "decision": "same",
+                "status": "running",
+                "next_subtask": "next",
+                "evidence": "not done",
             },
         ):
             service = HighLevelService(FakeBackend(payload))

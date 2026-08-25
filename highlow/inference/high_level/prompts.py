@@ -49,19 +49,53 @@ VERIFIER_JSON_SCHEMA_V1: Mapping[str, Any] = MappingProxyType(
     {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "HighLevelVerifierV1",
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "decision": {"type": "string", "enum": ["same", "switch"]},
-            "status": {
-                "type": "string",
-                "enum": ["running", "completed", "failed", "stuck", "uncertain"],
+        "anyOf": [
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "decision": {"const": "same"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["running", "failed", "stuck", "uncertain"],
+                    },
+                    "next_subtask": {"const": ""},
+                    "evidence": {"type": "string"},
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                },
+                "required": [
+                    "decision",
+                    "status",
+                    "next_subtask",
+                    "evidence",
+                ],
             },
-            "next_subtask": {"type": "string"},
-            "evidence": {"type": "string"},
-            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-        },
-        "required": ["decision", "status", "next_subtask", "evidence"],
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "decision": {"const": "switch"},
+                    "status": {"const": "completed"},
+                    "next_subtask": {"type": "string", "minLength": 1},
+                    "evidence": {"type": "string"},
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                },
+                "required": [
+                    "decision",
+                    "status",
+                    "next_subtask",
+                    "evidence",
+                ],
+            },
+        ],
     }
 )
 
