@@ -68,6 +68,7 @@ VERIFIER_JSON_SCHEMA_V1: Mapping[str, Any] = MappingProxyType(
 
 Renderer = Callable[[HighLevelRequest], str]
 Validator = Callable[[Mapping[str, Any], HighLevelRequest], HighLevelOutput]
+ResponseSchemaResolver = Callable[[HighLevelRequest], Mapping[str, Any]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +80,16 @@ class PromptSchemaSpec:
     response_schema: Mapping[str, Any]
     renderer: Renderer
     validator: Validator
+    response_schema_resolver: ResponseSchemaResolver | None = None
+
+    def response_schema_for(
+        self, request: HighLevelRequest
+    ) -> Mapping[str, Any]:
+        """Return the response schema specialization for one request."""
+
+        if self.response_schema_resolver is None:
+            return self.response_schema
+        return self.response_schema_resolver(request)
 
 
 def _json_context(value: Mapping[str, Any]) -> str:
@@ -110,6 +121,30 @@ def _frame_summary(request: HighLevelRequest) -> str:
 def _planner_mode(request: HighLevelRequest) -> str:
     value = str(request.structured_context.get("planner_mode", "next")).lower()
     return "all" if "all" in value else "next"
+
+
+def planner_response_schema_v1(
+    request: HighLevelRequest,
+) -> Mapping[str, Any]:
+    """Specialize planner.v1 cardinality without mutating its base schema."""
+
+    if request.operation is not HighLevelOperation.PLANNER:
+        raise HighLevelValidationError(
+            "planner.v1 response schema requires operation='planner'"
+        )
+    if _planner_mode(request) == "all":
+        return PLANNER_JSON_SCHEMA_V1
+
+    properties = dict(PLANNER_JSON_SCHEMA_V1["properties"])
+    subtasks = dict(properties["subtasks"])
+    subtasks["maxItems"] = 1
+    properties["subtasks"] = subtasks
+    return MappingProxyType(
+        {
+            **dict(PLANNER_JSON_SCHEMA_V1),
+            "properties": MappingProxyType(properties),
+        }
+    )
 
 
 def render_planner_v1(request: HighLevelRequest) -> str:
@@ -328,6 +363,7 @@ def default_prompt_schema_registry() -> PromptSchemaRegistry:
             response_schema=PLANNER_JSON_SCHEMA_V1,
             renderer=render_planner_v1,
             validator=validate_planner_v1,
+            response_schema_resolver=planner_response_schema_v1,
         ),
         default=True,
     )
@@ -356,6 +392,7 @@ __all__ = [
     "VERIFIER_PROMPT_V1",
     "VERIFIER_SCHEMA_V1",
     "default_prompt_schema_registry",
+    "planner_response_schema_v1",
     "render_planner_v1",
     "render_verifier_v1",
     "validate_planner_v1",

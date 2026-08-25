@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from io import BytesIO
 import json
 import sys
 import threading
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
 from highlow.adapters import (
@@ -34,6 +36,7 @@ from highlow.clients import (
     InProcessHighLevelClient,
     InProcessLowLevelClient,
     JsonHttpInferenceClient,
+    JsonHttpTransportError,
 )
 from highlow.contracts import (
     ActionEnvelope,
@@ -457,6 +460,30 @@ class HighLowBridgeTests(unittest.TestCase):
             transport=lambda *args: {"encoding": "base64", "data": "AP8="},
         )
         self.assertEqual(client.infer({"value": 1}), b"\x00\xff")
+
+    def test_json_http_error_preserves_service_response_body(self):
+        body = (
+            b'{"error":{"code":"HIGH_LEVEL_INFERENCE_ERROR",'
+            b'"message":"next mode must return exactly one subtask"}}'
+        )
+        error = HTTPError(
+            "http://inference.local/v1/infer",
+            422,
+            "Unprocessable Entity",
+            hdrs=None,
+            fp=BytesIO(body),
+        )
+        client = JsonHttpInferenceClient("http://inference.local")
+
+        with patch(
+            "highlow.clients.json_http.urlopen", side_effect=error
+        ), self.assertRaises(JsonHttpTransportError) as raised:
+            client.infer({"value": 1})
+
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertEqual(raised.exception.response_body, body)
+        self.assertIn("HIGH_LEVEL_INFERENCE_ERROR", str(raised.exception))
+        self.assertIn("exactly one subtask", str(raised.exception))
 
     def test_default_trigger_uses_first_call_not_step_zero(self):
         episode, high = self._episode("ep-nonzero"), _HighService()

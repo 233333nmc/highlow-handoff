@@ -5,11 +5,12 @@ from .in_process import (
     InProcessInferenceClient,
     InProcessLowLevelClient,
 )
-from .json_http import JsonHttpInferenceClient
+from .json_http import JsonHttpInferenceClient, JsonHttpTransportError
 
 __all__ = [
     "InProcessHighLevelClient",
     "InProcessInferenceClient",
     "InProcessLowLevelClient",
     "JsonHttpInferenceClient",
+    "JsonHttpTransportError",
 ]

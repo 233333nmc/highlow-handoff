@@ -180,6 +180,29 @@ class HighLevelServiceTest(unittest.TestCase):
         self.assertIn("Generate exactly one next subtask", backend_request.prompt)
         self.assertEqual(backend_request.schema_name, "high_level_planner_v1")
         self.assertEqual(backend_request.metadata["episode_id"], "episode-1")
+        self.assertEqual(
+            backend_request.response_schema["properties"]["subtasks"]["maxItems"],
+            1,
+        )
+
+    def test_planner_all_mode_keeps_unbounded_schema_and_multiple_subtasks(self):
+        backend = FakeBackend({"subtasks": ["first", "second"]})
+        service = HighLevelService(backend)
+        response = service.infer(
+            HighLevelRequest(
+                request_context=request_context(),
+                operation="planner",
+                episode_id="episode-1",
+                task_instruction="Do the task.",
+                structured_context={"planner_mode": "all"},
+            )
+        )
+
+        subtasks_schema = backend.requests[0].response_schema["properties"][
+            "subtasks"
+        ]
+        self.assertNotIn("maxItems", subtasks_schema)
+        self.assertEqual(response.output.subtasks, ("first", "second"))
 
     def test_verifier_v1_returns_typed_output(self):
         backend = FakeBackend(
@@ -413,6 +436,11 @@ class SGLangBackendTest(unittest.TestCase):
         self.assertEqual(payload["user"], "request-123")
         self.assertEqual(payload["response_format"]["type"], "json_schema")
         self.assertTrue(payload["response_format"]["json_schema"]["strict"])
+        response_schema = payload["response_format"]["json_schema"]["schema"]
+        self.assertEqual(
+            response_schema["properties"]["subtasks"]["maxItems"],
+            1,
+        )
         image_url = payload["messages"][0]["content"][0]["image_url"]["url"]
         self.assertEqual(
             image_url, "data:image/jpeg;base64," + base64.b64encode(b"abc").decode()

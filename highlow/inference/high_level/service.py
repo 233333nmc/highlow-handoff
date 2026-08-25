@@ -46,7 +46,7 @@ class HighLevelService:
             request_context=request.request_context,
             operation=request.operation,
             prompt=prompt,
-            response_schema=spec.response_schema,
+            response_schema=spec.response_schema_for(request),
             schema_name=spec.schema_name,
             frames=request.frames,
             generation=request.generation,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
+from urllib import error as urllib_error
 from urllib.request import Request, urlopen
 
 from highlow.inference.common.serialization import from_jsonable, to_jsonable
@@ -16,6 +17,43 @@ HttpTransport = Callable[
     [str, str, bytes | None, Mapping[str, str], float | None],
     Any,
 ]
+
+
+class JsonHttpTransportError(RuntimeError):
+    """A JSON endpoint could not be reached or returned an HTTP failure."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        url: str,
+        status_code: int | None = None,
+        response_body: bytes = b"",
+    ) -> None:
+        super().__init__(message)
+        self.url = url
+        self.status_code = status_code
+        self.response_body = response_body
+
+
+_ERROR_BODY_LIMIT = 2000
+
+
+def _http_error(exc: urllib_error.HTTPError, *, url: str) -> JsonHttpTransportError:
+    body = exc.read(_ERROR_BODY_LIMIT + 1)
+    truncated = len(body) > _ERROR_BODY_LIMIT
+    body = body[:_ERROR_BODY_LIMIT]
+    excerpt = body.decode("utf-8", errors="replace").strip()
+    if truncated:
+        excerpt += "..."
+    detail = f": {excerpt}" if excerpt else ""
+    return JsonHttpTransportError(
+        f"JSON endpoint {url} returned HTTP {exc.code}{detail}",
+        url=url,
+        status_code=int(exc.code),
+        response_body=body,
+    )
+
 
 def _stdlib_transport(
     method: str,
@@ -121,13 +159,22 @@ class JsonHttpInferenceClient:
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode("utf-8")
-        result = self.transport(
-            method,
-            self._url(endpoint),
-            body,
-            self.headers,
-            self.timeout_s,
-        )
+        url = self._url(endpoint)
+        try:
+            result = self.transport(
+                method,
+                url,
+                body,
+                self.headers,
+                self.timeout_s,
+            )
+        except urllib_error.HTTPError as exc:
+            raise _http_error(exc, url=url) from exc
+        except (OSError, urllib_error.URLError) as exc:
+            raise JsonHttpTransportError(
+                f"JSON request failed for {url}: {exc}",
+                url=url,
+            ) from exc
         if isinstance(result, bytes):
             payload = json.loads(result) if result else None
         elif isinstance(result, str):
@@ -144,6 +191,7 @@ class JsonHttpInferenceClient:
 __all__ = [
     "HttpTransport",
     "JsonHttpInferenceClient",
+    "JsonHttpTransportError",
     "RequestEncoder",
     "ResponseDecoder",
 ]
