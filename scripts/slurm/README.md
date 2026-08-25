@@ -114,7 +114,11 @@ terminates the three server process groups; it does not wait indefinitely.
 
 ```bash
 cd "$STORAGE/src/highlow-handoff"
+SLURM_LOG_ROOT="$STORAGE/runs/highlow-handoff/slurm"
+mkdir -p "$SLURM_LOG_ROOT"
 sbatch \
+  --output="$SLURM_LOG_ROOT/highlow-%j.out" \
+  --error="$SLURM_LOG_ROOT/highlow-%j.err" \
   --export=ALL,STORAGE="$STORAGE",RUN_ROBOTWIN=0 \
   scripts/slurm/draco_dual_system.sbatch
 ```
@@ -128,7 +132,11 @@ Set `RUN_ROBOTWIN=1` to replace the probe with the bounded simulator harness:
 
 ```bash
 cd "$STORAGE/src/highlow-handoff"
+SLURM_LOG_ROOT="$STORAGE/runs/highlow-handoff/slurm"
+mkdir -p "$SLURM_LOG_ROOT"
 sbatch \
+  --output="$SLURM_LOG_ROOT/highlow-%j.out" \
+  --error="$SLURM_LOG_ROOT/highlow-%j.err" \
   --export=ALL,STORAGE="$STORAGE",RUN_ROBOTWIN=1,TASK_NAME=place_burger_fries,TASK_CONFIG=demo_highlow_smoke,INSTRUCTION_TYPE=unseen,SEED=0 \
   scripts/slurm/draco_dual_system.sbatch
 ```
@@ -185,9 +193,11 @@ $STORAGE/runs/highlow-handoff/jobs/$SLURM_JOB_ID/
     └── http-probe.log or robotwin.log
 ```
 
-The `#SBATCH --output` and `--error` files are created in the submission
-directory because Slurm does not expand `$STORAGE` inside `#SBATCH` lines.
-Use `topology.json` and the per-process logs for the authoritative run record.
+The commands above override `#SBATCH --output` and `--error` so Slurm's wrapper
+logs do not appear as untracked files in the repository. Without those CLI
+options they are created in the submission directory because Slurm does not
+expand `$STORAGE` inside `#SBATCH` lines. Use `topology.json` and the per-process
+logs for the authoritative run record.
 
 ## Operational notes
 
