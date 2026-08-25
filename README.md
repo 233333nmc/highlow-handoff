@@ -4,6 +4,15 @@ Updated: 2026-08-09
 
 This repository records the RoboTwin high-level / low-level handoff baseline, Gemma4-12B experiments, and the current `next` / `all` planner debugging results.
 
+> A new generic, simulator-neutral runtime now lives in
+> [`highlow/`](highlow/README.md). It provides independently deployable
+> high-level and low-level inference APIs, low-level policy plugins (including
+> HyVLA), and a lightweight bridge that leaves the official simulator loop in
+> control. `robotwin_dual_system/` supplies the existing four-hook RoboTwin
+> policy interface without changing its evaluator. The experimental
+> implementation described below remains available as the legacy baseline and
+> has not been silently replaced.
+
 ## 1. Work This Week
 
 This week focused on three items:
