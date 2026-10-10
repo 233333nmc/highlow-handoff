@@ -135,4 +135,4 @@ flash-attn = [
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["hy_vla"]
+packages = ["hy_vla", "highlow", "robotwin_eval", "robotwin_dual_system"]

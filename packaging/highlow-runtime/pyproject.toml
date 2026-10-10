@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "highlow-runtime"
+version = "0.1.0"
+description = "Framework-light high/low inference contracts, services, clients, and simulator bridge"
+requires-python = ">=3.10,<3.13"
+dependencies = []
+
+[project.optional-dependencies]
+server = ["uvicorn>=0.30"]
+robotwin-codec = ["numpy>=1.24", "Pillow>=10.0"]
+
+[tool.setuptools]
+package-dir = {"" = "../.."}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["../.."]
+include = ["highlow*", "robotwin_dual_system*"]
+
+[tool.setuptools.package-data]
+highlow = ["README.md"]
+robotwin_dual_system = ["*.yml"]

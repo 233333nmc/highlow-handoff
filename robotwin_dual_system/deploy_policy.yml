@@ -1,0 +1,13 @@
+# RoboTwin policy configuration for the generic remote dual-system runtime.
+# Task-side values such as task_name and seed can continue to come from the
+# official evaluator's task config / CLI overrides.
+
+high_level_url: http://127.0.0.1:8100
+low_level_url: http://127.0.0.1:8200
+high_level_timeout_s: 120
+low_level_timeout_s: 120
+
+# 0/null means plan once. A positive value runs the verifier periodically.
+verifier_interval_steps: 100
+source_fps: 25
+action_type: ee
